@@ -1,0 +1,25 @@
+{
+  "name": "base",
+  "version": "1.0.0",
+  "description": "A cross-chain bridge implementation that enables seamless message passing and token transfers between Base and Solana.",
+  "main": "index.js",
+  "directories": {
+    "lib": "lib",
+    "test": "test"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "@inco/js": "^0.8.0-devnet",
+    "@inco/lightning": "^0.8.0-devnet",
+    "@openzeppelin/contracts": "^5.4.0",
+    "@openzeppelin/contracts-upgradeable": "^5.4.0",
+    "forge-std": "^1.14.0",
+    "solady": "^0.1.26"
+  }
+}

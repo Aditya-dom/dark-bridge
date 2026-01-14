@@ -1,0 +1,31 @@
+# Anchor / Solana
+.anchor
+target
+**/*.rs.bk
+test-ledger
+*.so
+
+# Node
+node_modules
+.yarn
+package-lock.json
+bun.lock
+
+# Foundry
+out/
+cache/
+broadcast/
+
+# IDE
+.DS_Store
+/.idea/
+.vscode/
+
+# Environment
+.env
+.env.*
+keypairs/
+
+# OS
+*.log
+.DS_Store
