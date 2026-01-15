@@ -31,7 +31,8 @@
   "scripts": {
     "build": "bun run clean && bun run tsc",
     "clean": "rm -rf dist",
-    "prepublishOnly": "bun run build"
+    "prepublishOnly": "bun run build",
+    "generate-ciphertexts": "npx tsx src/generate-test-ciphertexts.ts"
   },
   "publishConfig": {
     "access": "public",
