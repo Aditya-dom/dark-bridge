@@ -8,8 +8,13 @@ optimizer = true
 optimizer_runs = 999999
 solc_version = "0.8.28"
 via-ir = false
-remappings = ["forge-std/=node_modules/forge-std/src/", "solady/=node_modules/solady/src/", "@inco/lightning/=node_modules/@inco/lightning/src/", "@openzeppelin/contracts/=node_modules/@openzeppelin/contracts/", "@openzeppelin/contracts-upgradeable/=node_modules/@openzeppelin/contracts-upgradeable/"]
+remappings = ["forge-std/=lib/forge-std/src/", "solady/=lib/solady/src/", "@inco/lightning/=node_modules/@inco/lightning/src/", "@openzeppelin/contracts/=node_modules/@openzeppelin/contracts/", "@openzeppelin/contracts-upgradeable/=node_modules/@openzeppelin/contracts-upgradeable/"]
 gas_limit = "18446744073709551615"
+
+# RPC endpoints for fork testing
+[rpc_endpoints]
+base_sepolia = "https://sepolia.base.org"
+base_mainnet = "https://mainnet.base.org"
 
 # See more config options https://github.com/foundry-rs/foundry/blob/master/crates/config/README.md#all-options
 [fmt]

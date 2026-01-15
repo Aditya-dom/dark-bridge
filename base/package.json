@@ -16,10 +16,8 @@
   "type": "commonjs",
   "dependencies": {
     "@inco/js": "^0.8.0-devnet",
-    "@inco/lightning": "^0.8.0-devnet",
-    "@openzeppelin/contracts": "^5.4.0",
-    "@openzeppelin/contracts-upgradeable": "^5.4.0",
-    "forge-std": "^1.14.0",
-    "solady": "^0.1.26"
+    "@inco/lightning": "0.8.0-devnet",
+    "@openzeppelin/contracts": "5.4.0",
+    "@openzeppelin/contracts-upgradeable": "5.4.0"
   }
 }

@@ -34,6 +34,10 @@ contract ConfidentialBridge is ReentrancyGuardTransient {
     /// @notice Nonce for confidential bridge messages.
     uint256 public confidentialNonce;
 
+    /// @notice Mapping of nonce to expected encrypted amount handle for verification.
+    /// @dev Used to prevent handle swapping attacks during cross-chain transfers.
+    mapping(uint256 => bytes32) public expectedHandles;
+
     //////////////////////////////////////////////////////////////
     ///                       Events                           ///
     //////////////////////////////////////////////////////////////
@@ -49,6 +53,7 @@ contract ConfidentialBridge is ReentrancyGuardTransient {
 
     /// @notice Emitted when a confidential transfer is received from Solana.
     event ConfidentialBridgeReceived(
+        uint256 indexed nonce,
         address indexed localToken,
         address indexed to,
         euint256 encryptedAmount
@@ -62,6 +67,8 @@ contract ConfidentialBridge is ReentrancyGuardTransient {
     error ZeroAddress();
     error TokenNotRegistered();
     error Unauthorized();
+    error HandleMismatch();
+    error InvalidNonce();
 
     //////////////////////////////////////////////////////////////
     ///                       Modifiers                        ///
@@ -124,8 +131,9 @@ contract ConfidentialBridge is ReentrancyGuardTransient {
             ConfidentialCrossChainERC20(localToken).remoteToken()
         );
 
-        // Increment nonce and emit bridge event
+        // Increment nonce and store expected handle for verification
         uint256 nonce = confidentialNonce++;
+        expectedHandles[nonce] = euint256.unwrap(amount);
 
         emit ConfidentialBridgeInitiated(
             nonce,
@@ -164,6 +172,7 @@ contract ConfidentialBridge is ReentrancyGuardTransient {
         );
 
         uint256 nonce = confidentialNonce++;
+        expectedHandles[nonce] = euint256.unwrap(amount);
 
         emit ConfidentialBridgeInitiated(
             nonce,
@@ -178,10 +187,45 @@ contract ConfidentialBridge is ReentrancyGuardTransient {
 
     /// @notice Receive confidential tokens from Solana.
     /// @dev Called by the main bridge when relaying from Solana.
+    /// @dev SECURITY: Verifies that the received handle matches the expected handle from the outgoing message.
+    /// @param nonce The bridge message nonce for verification.
     /// @param localToken The confidential token to mint.
     /// @param to The recipient on Base.
     /// @param encryptedAmount The encrypted amount to mint.
     function receiveFromSolana(
+        uint256 nonce,
+        address localToken,
+        address to,
+        bytes calldata encryptedAmount
+    ) external payable onlyBridge nonReentrant {
+        require(localToken != address(0), ZeroAddress());
+        require(to != address(0), ZeroAddress());
+
+        // Create handle from the received encrypted amount
+        euint256 amount = encryptedAmount.newEuint256(msg.sender);
+        bytes32 receivedHandle = euint256.unwrap(amount);
+
+        // CRITICAL SECURITY CHECK: Verify handle matches expected
+        bytes32 expected = expectedHandles[nonce];
+        if (expected == bytes32(0)) revert InvalidNonce();
+        if (receivedHandle != expected) revert HandleMismatch();
+
+        // Clear the expected handle to prevent replay
+        delete expectedHandles[nonce];
+
+        // Mint confidential tokens to recipient
+        ConfidentialCrossChainERC20(localToken).confidentialMint{value: msg.value}(
+            to,
+            encryptedAmount
+        );
+
+        emit ConfidentialBridgeReceived(nonce, localToken, to, amount);
+    }
+
+    /// @notice Receive confidential tokens from Solana (legacy, no handle verification).
+    /// @dev Deprecated: Use receiveFromSolana with nonce parameter for security.
+    /// @dev This function is kept for backward compatibility but should not be used.
+    function receiveFromSolanaLegacy(
         address localToken,
         address to,
         bytes calldata encryptedAmount
@@ -197,7 +241,8 @@ contract ConfidentialBridge is ReentrancyGuardTransient {
 
         euint256 amount = encryptedAmount.newEuint256(msg.sender);
 
-        emit ConfidentialBridgeReceived(localToken, to, amount);
+        // Emit event without nonce (legacy)
+        emit ConfidentialBridgeReceived(0, localToken, to, amount);
     }
 
     //////////////////////////////////////////////////////////////
@@ -212,6 +257,12 @@ contract ConfidentialBridge is ReentrancyGuardTransient {
     /// @notice Check if a token has a confidential counterpart.
     function hasConfidentialToken(address localToken) external view returns (bool) {
         return confidentialTokens[localToken] != address(0);
+    }
+
+    /// @notice Get the expected handle for a given nonce.
+    /// @dev Returns bytes32(0) if nonce is invalid or already consumed.
+    function getExpectedHandle(uint256 nonce) external view returns (bytes32) {
+        return expectedHandles[nonce];
     }
 
     //////////////////////////////////////////////////////////////
