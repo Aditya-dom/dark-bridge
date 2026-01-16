@@ -7,22 +7,24 @@
  * Usage: npx ts-node src/demo-private-bridge.ts
  */
 
-import { PrivacyBridgeClient, PrivateBridgeConfig } from './privacy-client';
+import { PrivacyBridgeClient, PrivateBridgeConfig } from './privacy-client.js';
 import { createWalletClient, http, parseEther } from 'viem';
 import { baseSepolia } from 'viem/chains';
 import { privateKeyToAccount } from 'viem/accounts';
 import { Connection, Keypair, PublicKey } from '@solana/web3.js';
 import { AnchorProvider, Program, Wallet } from '@coral-xyz/anchor';
 
-// Configuration - UPDATE THESE VALUES
-const PRIVATE_KEY = process.env.PRIVATE_KEY || '0x...';
+import crypto from 'crypto';
+
+// Configuration - UPDATE THESE VALUES or set env vars
+const PRIVATE_KEY = process.env.PRIVATE_KEY || ('0x' + crypto.randomBytes(32).toString('hex')) as `0x${string}`;
 const SOLANA_KEYPAIR_PATH = process.env.SOLANA_KEYPAIR || '~/.config/solana/id.json';
 
 const CONFIG: PrivateBridgeConfig = {
-    // Base Sepolia
+    // Base Sepolia - FULLY DEPLOYED!
     baseRpcUrl: process.env.BASE_SEPOLIA_RPC || 'https://sepolia.base.org',
-    confidentialBridgeAddress: '0x0000000000000000000000000000000000000000' as const, // TODO: Update after deployment
-    confidentialTokenAddress: '0x0000000000000000000000000000000000000000' as const, // TODO: Update after deployment
+    confidentialBridgeAddress: '0x09ED10e70F46C9a45cE03Da0bC5Bdb9434d33D59' as const,
+    confidentialTokenAddress: '0x9DE43656041A9Fce12f1Fb848CCB0D9DF44B5e20' as const,
 
     // Solana Devnet
     solanaRpcUrl: process.env.SOLANA_RPC || 'https://api.devnet.solana.com',
@@ -33,12 +35,12 @@ const CONFIG: PrivateBridgeConfig = {
 };
 
 async function main() {
-    console.log('🔐 Privacy Bridge Demo\n');
+    console.log('Privacy Bridge Demo\n');
     console.log('========================\n');
 
     // Initialize client
     const client = new PrivacyBridgeClient(CONFIG);
-    console.log('✅ Initialized PrivacyBridgeClient\n');
+    console.log('Initialized PrivacyBridgeClient\n');
 
     // Setup Base wallet
     const account = privateKeyToAccount(PRIVATE_KEY as `0x${string}`);
@@ -47,11 +49,11 @@ async function main() {
         chain: baseSepolia,
         transport: http(CONFIG.baseRpcUrl),
     });
-    console.log(`📍 Base wallet: ${account.address}`);
+    console.log(`Base wallet: ${account.address}`);
 
     // Setup Solana wallet
     const solanaKeypair = Keypair.generate(); // For demo, use actual keypair in production
-    console.log(`📍 Solana wallet: ${solanaKeypair.publicKey.toBase58()}\n`);
+    console.log(`Solana wallet: ${solanaKeypair.publicKey.toBase58()}\n`);
 
     // Demo 1: Encrypt amount for Base
     console.log('--- Demo 1: Base Encryption ---');
@@ -96,7 +98,7 @@ async function main() {
     console.log('  6. Mints to ConfidentialCrossChainERC20 (encrypted)');
 
     console.log('\n========================');
-    console.log('🎉 Demo complete!\n');
+    console.log('Demo complete!\n');
     console.log('To run actual transfers, deploy contracts and update CONFIG addresses.');
 }
 

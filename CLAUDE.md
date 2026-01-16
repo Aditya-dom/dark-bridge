@@ -182,7 +182,7 @@ vm.deal(DEPLOYED_BRIDGE, 50 ether); // For prank calls
 
 ## Known Issues
 
-### @inco/js ESM Package Bug
+### @inco/js ESM Package Bug ✅ RESOLVED
 
 The `@inco/js` package (v0.8.0-devnet) has **broken ESM exports** when used with Node.js:
 
@@ -190,11 +190,28 @@ The `@inco/js` package (v0.8.0-devnet) has **broken ESM exports** when used with
 - Named exports fail: `"does not provide an export named 'Lightning'"`
 - Affects: `@inco/js/lite`, `@inco/js/encryption` subpaths
 
-**Workarounds:**
+**Resolution:** Use **bun** instead of Node.js
 
-1. **Use bun instead of Node.js** - Package works correctly with bun
-2. **Use CommonJS** - Import via require() if possible
-3. **Mock Inco in tests** - Use `vm.mockCall` to simulate Inco responses
+```bash
+# Install bun (one-time)
+curl -fsSL https://bun.sh/install | bash
+source ~/.zshrc
+
+# Run scripts with bun (works perfectly!)
+bun run src/demo-private-bridge.ts
+```
+
+**Why this works:** Bun has better ESM module resolution that handles the package's subpath exports correctly.
+
+**Additional fix needed:** The `Lightning.latest()` method returns a Promise, so it must be awaited:
+
+```typescript
+// ❌ Wrong (what was causing "encrypt is not a function")
+this.baseZap = Lightning.latest(config.incoEnvironment, chainId);
+
+// ✅ Correct (await the Promise)
+this.baseZap = await Lightning.latest(config.incoEnvironment, chainId);
+```
 
 ### ConfidentialCrossChainERC20 Initialization
 

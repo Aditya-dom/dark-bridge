@@ -66,17 +66,17 @@ export const CONFIGS = {
       bridgeKpPath: "keypairs/bridge.devnet.alpha.json",
       baseRelayerKpPath: "keypairs/base-relayer.devnet.alpha.json",
 
-      // Base oracle signers
-      evmLocalKey: "0x20BFBCCC8aBaD55c8aA383a75838348A646eDbA0",
-      evmKeychainKey: "0xfc85de3f52047b993b2dda967b606a8b9caa2c29",
+      // Base oracle signers - using our deployer wallet for testing
+      evmLocalKey: "0xF8AF04bF0Ac151f2050436603d81Ba20f449028F",
+      evmKeychainKey: "0xF8AF04bF0Ac151f2050436603d81Ba20f449028F",
 
-      // Programs
-      bridgeProgram: address("6YpL1h2a9u6LuNVi55vAes36xNszt2UDm3Zk1kj4WSBm"),
+      // Programs - OUR initialized bridge programs
+      bridgeProgram: address("EEMKRm1ANMBZHS6yEi67bKVuZDPhztQHVWBzoFnoVbh9"),
       baseRelayerProgram: address(
-        "ETsFnoWdJK8N7VJW6XXjiciyB2xeQfCXMQWNa85Zi9cn"
+        "hSNmwoXiEZzB5wvjqpKDxuHkim4AabsGki2NTcXwjsc"
       ),
 
-      // SPLs
+      // SPLs (can use existing ones for testing)
       spl: address("8KkQRERXdASmXqeWw7sPFB56wLxyHMKc9NPDW64EEL31"),
       wEth: address("Ds8zVAg2CCG9p1LL1PkeDBzr4hhsSYeeadKQZnH3KGkL"),
       wErc20: address("5RY1tS5AccP14676cQzs6EZBoV51Gek3FoWPyU1syhrq"),
@@ -84,8 +84,8 @@ export const CONFIGS = {
     base: {
       chain: baseSepolia,
 
-      // Contracts
-      bridgeContract: "0x64567a9147fa89B1edc987e36Eb6f4b6db71656b",
+      // Contracts - OUR deployed contracts (fresh deploy)
+      bridgeContract: "0x8e46419298a9620ea326113baf4019a23594bb11",
       counterContract: "0x5d3eB988Daa06151b68369cf957e917B4371d35d",
       flywheelContract: "0x00000f14ad09382841db481403d1775adee1179f",
       flywheelCampaign: "0x7626f7F9A574f526066acE9073518DaB1Bee038C",

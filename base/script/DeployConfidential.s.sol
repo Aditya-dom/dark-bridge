@@ -9,8 +9,8 @@ import {ConfidentialBridge} from "../src/ConfidentialBridge.sol";
 /// @notice Deployment script for confidential bridge contracts on Base Sepolia.
 /// @dev Run with: forge script script/DeployConfidential.s.sol --rpc-url base-sepolia --broadcast
 contract DeployConfidential is Script {
-    // Existing bridge address on Base Sepolia (update with your deployment)
-    address constant EXISTING_BRIDGE = address(0); // TODO: Set your bridge address
+    // Deployed bridge address on Base Sepolia
+    address constant EXISTING_BRIDGE = 0x5CF8A12B48a221aCeD811602d0F0752CBe110fBe;
 
     function run() external {
         uint256 deployerPrivateKey = vm.envUint("PRIVATE_KEY");
@@ -28,10 +28,10 @@ contract DeployConfidential is Script {
         console2.log("ConfidentialCrossChainERC20 impl:", address(tokenImpl));
 
         // Deploy Confidential Bridge
-        // Note: In production, you'd deploy a factory first
+        // Points to the deployed CrossChainERC20Factory
         ConfidentialBridge confidentialBridge = new ConfidentialBridge(
             EXISTING_BRIDGE,
-            address(0) // TODO: Set factory address
+            0xEeEBDDa1bfE1C0aF25A56A3beb73e495dbaE7DEB // CrossChainERC20Factory
         );
         console2.log("ConfidentialBridge:", address(confidentialBridge));
 

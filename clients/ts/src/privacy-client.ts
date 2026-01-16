@@ -47,13 +47,23 @@ export class PrivacyBridgeClient {
     private baseZap: any;
     private solanaConnection: Connection;
     private config: PrivateBridgeConfig;
+    private initialized: boolean = false;
 
     constructor(config: PrivateBridgeConfig) {
         this.config = config;
         this.solanaConnection = new Connection(config.solanaRpcUrl, 'confirmed');
+        this.baseZap = null;
+    }
 
-        // Initialize Inco Lightning for Base
-        this.baseZap = Lightning.latest(config.incoEnvironment, BASE_SEPOLIA_CHAIN_ID);
+    /**
+     * Initialize the client (must be called before using Base encryption)
+     */
+    async init(): Promise<void> {
+        if (!this.initialized) {
+            // Initialize Inco Lightning for Base
+            this.baseZap = await Lightning.latest(this.config.incoEnvironment, BASE_SEPOLIA_CHAIN_ID);
+            this.initialized = true;
+        }
     }
 
     // ============================================================================
@@ -68,6 +78,11 @@ export class PrivacyBridgeClient {
         amount: bigint,
         userAddress: Address
     ): Promise<Hex> {
+        // Ensure initialized
+        if (!this.baseZap) {
+            await this.init();
+        }
+
         const ciphertext = await this.baseZap.encrypt(amount, {
             accountAddress: userAddress,
             dappAddress: this.config.confidentialBridgeAddress,

@@ -58,6 +58,7 @@
   "homepage": "https://github.com/base/bridge#readme",
   "devDependencies": {
     "@solana/kit": "4.0.0",
+    "@types/bs58": "^4.0.4",
     "@types/bun": "latest",
     "typescript": "5.9.3"
   },

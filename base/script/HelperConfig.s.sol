@@ -50,26 +50,23 @@ contract HelperConfig is Script {
     }
 
     function getBaseSepoliaDevConfig() public pure returns (NetworkConfig memory) {
-        address bridgeAdmin = 0x20624CA8d0dF80B8bd67C25Bc19A9E10AfB67733;
-
-        address baseLocalSigner = 0x0e9a877906EBc3b7098DA2404412BF0Ed1A5EFb4;
-        address baseKeychainSigner = 0x6D0E9C04BD896608b7e10b87FB686E1Feba85510;
+        // Using deployer wallet for hackathon testing
+        address bridgeAdmin = 0xF8AF04bF0Ac151f2050436603d81Ba20f449028F;
 
         address[] memory guardians = new address[](1);
-        address[] memory baseValidators = new address[](2);
+        address[] memory baseValidators = new address[](1);
         guardians[0] = bridgeAdmin;
-        baseValidators[0] = baseLocalSigner;
-        baseValidators[1] = baseKeychainSigner;
+        baseValidators[0] = bridgeAdmin; // Single validator for testing
 
         return NetworkConfig({
             initialOwner: bridgeAdmin,
-            remoteBridge: Pubkey.wrap(0xe4800c8ccac70344ce171377556eade6254744e0dc5ca4c980d596884099e166), // GNyCjXAbkdceLWKBwr9Vd6NLoES6cP4QwCbQ5y5fz46H
+            remoteBridge: Pubkey.wrap(0xcc0c18d51d2be55009e9e8bf1fefc21ab4092e8dacc67e63f9fe45b84fc0d67a), // Our deployed Solana bridge: EEMKRm1ANMBZHS6yEi67bKVuZDPhztQHVWBzoFnoVbh9
             erc1967Factory: ERC1967FactoryConstants.ADDRESS,
             baseValidators: baseValidators,
-            baseSignatureThreshold: 2,
+            baseSignatureThreshold: 1, // Single signer for testing
             guardians: guardians,
-            partnerValidatorThreshold: 3,
-            partnerValidators: 0x4EdB7D4944a04B6230a5F496e3a1F6E74DA3C593
+            partnerValidatorThreshold: 0, // Disable partner validators for testing
+            partnerValidators: address(1) // Non-zero placeholder
         });
     }
 
