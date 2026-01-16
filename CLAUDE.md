@@ -118,6 +118,17 @@ bun run src/generate-test-ciphertexts.ts
 4. On receive, handle is verified to prevent substitution attacks
 5. `receiveFromSolana(nonce, token, recipient, encryptedAmount)` mints to recipient
 
+### Bidirectional Bridge Client (Added in 6d71c93)
+
+A unified client (`BidirectionalBridge`) manages operations across both chains:
+
+- **State Monitoring**: `getState()` provides real-time sync status (Base blocks/MMR vs Solana registered roots).
+- **Visual Dashboard**: `printStatus()` displays bridge balances, message counts, and oracle sync latency.
+- **Operations**:
+  - `startOracle()`: Runs the oracle service to register Base output roots.
+  - `proveMessage()`: Proves and relays Base messages to Solana.
+  - `relayToBase()`: Relays Solana messages to Base.
+
 ## Environment Setup
 
 ### Base Contracts
@@ -251,6 +262,7 @@ When running fork tests with mock encrypted amounts:
 ### TypeScript SDK
 
 - `clients/ts/src/privacy-client.ts` - Privacy bridge client using Inco
+- `clients/ts/src/bidirectional-bridge.ts` - Unified bridge client & oracle
 - `clients/ts/src/generate-test-ciphertexts.ts` - Test ciphertext generator
 
 ## Inco Lightning Integration
