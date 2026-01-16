@@ -291,3 +291,195 @@ e.allow(handle, user);
 ### SVM (Solana)
 
 Uses CPI to Inco Lightning program for FHE operations. See `clients/ts/src/privacy-client.ts` for encryption examples.
+
+---
+
+## Base → Solana Bridge Troubleshooting (January 2026)
+
+This section documents the issues encountered and fixes implemented to get the Base→Solana bridge operational.
+
+### Problem Summary
+
+The Base→Solana bridge was not working due to several configuration and code issues:
+
+1. **Oracle signer not authorized** on the Solana bridge program
+2. **Double EIP-191 prefix bug** in the oracle signing code
+3. **Wrong bridge contract address** in the oracle configuration
+4. **Massive block gap** between Solana bridge state and current Base blocks
+
+### Issue 1: Oracle Signer Not Authorized
+
+**Symptom**: Oracle failed with `InsufficientBaseSignatures` error
+
+**Root Cause**: The EVM address `0xF8AF04bF0Ac151f2050436603d81Ba20f449028F` (derived from the private key in `base/.env`) was not registered as an authorized oracle signer on the Solana bridge program.
+
+**Solution**: Created `scripts/src/set-oracle-signers.ts` to call the `setOracleSigners` instruction:
+
+```bash
+cd scripts && bun run src/set-oracle-signers.ts
+```
+
+This requires the **program upgrade authority** (deployer) keypair to sign. The script:
+- Derives the bridge PDA and program data address
+- Builds a `BaseOracleConfig` with threshold=1 and the EVM signer address
+- Sends the `setOracleSigners` instruction
+
+**Key Transaction**: `5mzPig9YVKqkGjhpST8EJCmGKQAF5RcsRqi3Vs3pqVcZsgiW5kywSuR6bHeZEVszXxEmqryqaRffEHEzGyQ15pTG`
+
+### Issue 2: Double EIP-191 Prefix Bug
+
+**Symptom**: Oracle signatures were being rejected even after setting the correct signer
+
+**Root Cause**: In `clients/ts/src/base-to-solana-oracle.ts`, the `signOutputRoot` function was:
+1. Computing `messageHash` with EIP-191 prefix applied
+2. Then calling `signMessage({ raw: messageHash })` which adds **another** EIP-191 prefix
+
+This resulted in a double-prefixed message that didn't match what the Solana program expected.
+
+**Solution**: Changed the signing flow to pass raw message bytes to `signMessage`:
+
+```typescript
+// Before (WRONG - double prefix):
+const messageHash = computeOutputRootMessageHash(...); // Adds EIP-191 prefix
+const signature = await account.signMessage({ message: { raw: messageHash } }); // Adds ANOTHER prefix!
+
+// After (CORRECT - single prefix):
+const rawMessage = buildRawMessageBytes(...); // NO prefix
+const signature = await account.signMessage({ message: { raw: rawMessage } }); // Adds prefix ONCE
+```
+
+The Solana program at `register_output_root.rs:8` computes:
+```rust
+// message = keccak256("\x19Ethereum Signed Message:\n" || len || (output_root || base_block_number_be || total_leaf_count_be))
+```
+
+So viem's `signMessage` should receive the raw bytes (output_root || block_number || leaf_count), and it will add the prefix automatically.
+
+### Issue 3: Wrong Bridge Contract Address
+
+**Symptom**: Oracle was using a different bridge than the CLI tools
+
+**Root Cause**: The oracle's `TESTNET_CONFIG` in `base-to-solana-oracle.ts` had:
+```typescript
+baseBridgeAddress: '0x2B3550823301752c95290ec6f8781E88F0Bac8c4'  // Wrong!
+```
+
+But the CLI's `testnet-alpha` config uses:
+```typescript
+bridgeContract: '0x8e46419298a9620ea326113baf4019a23594bb11'  // Correct!
+```
+
+**Solution**: Updated `TESTNET_CONFIG` to use the correct address:
+
+```typescript
+const TESTNET_CONFIG: OracleConfig = {
+    baseBridgeAddress: '0x8e46419298a9620ea326113baf4019a23594bb11',
+    // ... rest of config
+};
+```
+
+### Issue 4: Block Number Gap
+
+**Symptom**: `prove-message` failed with "Transaction not finalized yet: 4200 < 36409637"
+
+**Root Cause**: The Solana bridge was initialized starting from block 0, but Base Sepolia was already at block 36+ million. The oracle syncs 300 blocks every 30 seconds, meaning it would take 1000+ hours to catch up.
+
+**Solution**: Created `scripts/src/fast-forward-oracle.ts` to register output roots at any block number:
+
+```bash
+cd scripts && EVM_PRIVATE_KEY=0x... bun run src/fast-forward-oracle.ts
+```
+
+This script:
+1. Gets the current Base block number
+2. Reads the MMR root at a target aligned block
+3. Signs the output root message
+4. Calls `registerOutputRoot` on Solana at the target block
+
+### Complete Command Reference
+
+```bash
+# 1. Set oracle signers (requires upgrade authority)
+cd scripts && bun run src/set-oracle-signers.ts
+
+# 2. Start the oracle service
+cd clients/ts && \
+  SOLANA_PRIVATE_KEY=$(cat ~/.config/solana/id.json) \
+  EVM_PRIVATE_KEY=0x2526bbb0e6f0b2b5974fd974d7d26907e584d44c1de55876d2ef4b794fae97db \
+  bun run src/base-to-solana-oracle.ts
+
+# 3. Fast-forward to current block (for testing)
+cd scripts && EVM_PRIVATE_KEY=0x... bun run src/fast-forward-oracle.ts
+
+# 4. Create a Base transaction (example bridgeCall)
+cast send 0x8e46419298a9620ea326113baf4019a23594bb11 \
+  "bridgeCall((bytes32,bytes[],bytes)[])" \
+  '[(0xc671a23760000000000000000000000000000000000000000000000000000000,[],0x00)]' \
+  --rpc-url https://sepolia.base.org \
+  --private-key 0x...
+
+# 5. Prove message on Solana (from scripts/ directory!)
+cd scripts && bun run cli sol bridge prove-message \
+  --deploy-env testnet-alpha \
+  --transaction-hash 0x<BASE_TX_HASH> \
+  --payer-kp config
+
+# 6. Relay message (automatically done if not using --skip-relay)
+cd scripts && bun run cli sol bridge relay-message \
+  --deploy-env testnet-alpha \
+  --message-hash 0x<MESSAGE_HASH> \
+  --payer-kp config
+```
+
+### Key Files Modified/Created
+
+| File | Purpose |
+|------|---------|
+| `scripts/src/set-oracle-signers.ts` | Set authorized EVM signers on Solana bridge |
+| `scripts/src/fast-forward-oracle.ts` | Jump oracle to current Base block |
+| `clients/ts/src/base-to-solana-oracle.ts` | Fixed signing bug and bridge address |
+
+### Verified End-to-End Flow
+
+1. ✅ Oracle signer `0xF8AF04bF0Ac151f2050436603d81Ba20f449028F` authorized
+2. ✅ Oracle registering output roots at 300-block intervals
+3. ✅ Base transaction created at block 36409637
+4. ✅ Prove-message succeeded: `4uiXn8sMRD5TBc6HQHGM9TN8VxRV8AVtsN5jG3caiAjMxfu8xhuYVNhbKMbxFxRfny5ToYNMdntFCxXKfXfBgEAp`
+5. ⚠️ Relay failed due to dummy program ID (expected - test instruction was invalid)
+
+### Architecture Insight: How the Bridge Works
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                     BASE → SOLANA FLOW                          │
+│                                                                 │
+│  1. User calls bridgeCall() or bridgeToken() on Base            │
+│     └── MessageInitiated event emitted with MMR root + nonce    │
+│                                                                 │
+│  2. Oracle monitors Base, every 300 blocks:                     │
+│     ├── Reads MMR root from Base bridge contract                │
+│     ├── Signs (root || block_number || leaf_count) with EVM key │
+│     └── Calls registerOutputRoot() on Solana bridge             │
+│                                                                 │
+│  3. User runs prove-message:                                    │
+│     ├── Fetches Base tx receipt and MessageInitiated event      │
+│     ├── Generates Merkle proof from Base bridge.generateProof() │
+│     ├── Finds registered output root on Solana at >= tx block   │
+│     └── Calls proveMessage() on Solana with proof               │
+│                                                                 │
+│  4. User runs relay-message:                                    │
+│     ├── Fetches proven message account from Solana              │
+│     └── Calls relayMessage() to execute the instruction(s)      │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Common Errors and Solutions
+
+| Error | Cause | Fix |
+|-------|-------|-----|
+| `InsufficientBaseSignatures` | EVM signer not authorized | Run `set-oracle-signers.ts` |
+| `Transaction not finalized yet` | Oracle hasn't synced to tx block | Wait for oracle or run `fast-forward-oracle.ts` |
+| `Script not found "cli"` | Running from wrong directory | `cd scripts` first |
+| `custom program error: #0` | Account already exists | Block already registered, skip ahead |
+| `Unsupported program id` | Instruction targets invalid program | Use valid Solana program ID in bridgeCall |
+
