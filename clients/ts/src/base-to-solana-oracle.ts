@@ -55,7 +55,7 @@ export interface OracleConfig {
 const TESTNET_CONFIG: OracleConfig = {
     // Base Sepolia
     baseRpcUrl: 'https://sepolia.base.org',
-    baseBridgeAddress: '0x2B3550823301752c95290ec6f8781E88F0Bac8c4',
+    baseBridgeAddress: '0x8e46419298a9620ea326113baf4019a23594bb11',
     baseChainId: 84532,
 
     // Solana Devnet
@@ -68,6 +68,7 @@ const TESTNET_CONFIG: OracleConfig = {
     pollIntervalMs: 30000, // 30 seconds
     blockInterval: 300, // Must be divisible by this
 };
+
 
 const MAINNET_CONFIG: OracleConfig = {
     // Base Mainnet
@@ -179,8 +180,33 @@ function computeOutputRootMessageHash(
 }
 
 /**
+ * Build the raw message bytes for signing (before EIP-191 prefix)
+ */
+function buildRawMessageBytes(
+    outputRoot: Hex,
+    baseBlockNumber: bigint,
+    totalLeafCount: bigint
+): Uint8Array {
+    const blockNumberBE = Buffer.alloc(8);
+    blockNumberBE.writeBigUInt64BE(baseBlockNumber);
+
+    const leafCountBE = Buffer.alloc(8);
+    leafCountBE.writeBigUInt64BE(totalLeafCount);
+
+    return Buffer.concat([
+        Buffer.from(outputRoot.slice(2), 'hex'),
+        blockNumberBE,
+        leafCountBE,
+    ]);
+}
+
+/**
  * Sign an output root with an EVM private key
  * Returns 65-byte signature in r||s||v format
+ * 
+ * The Solana program expects: keccak256(EIP-191 prefix + message)
+ * viem's signMessage automatically applies EIP-191 prefix to the message
+ * So we just pass the raw message bytes and viem handles the prefix
  */
 async function signOutputRoot(
     account: ReturnType<typeof privateKeyToAccount>,
@@ -188,17 +214,20 @@ async function signOutputRoot(
     baseBlockNumber: bigint,
     totalLeafCount: bigint
 ): Promise<Uint8Array> {
-    const messageHash = computeOutputRootMessageHash(outputRoot, baseBlockNumber, totalLeafCount);
+    // Build raw message bytes (NO prefix - signMessage will add it)
+    const rawMessage = buildRawMessageBytes(outputRoot, baseBlockNumber, totalLeafCount);
 
-    // Sign the raw hash (not the message)
+    // signMessage will apply EIP-191 prefix: "\x19Ethereum Signed Message:\n" + len + message
+    // This matches what the Solana program expects
     const signature = await account.signMessage({
-        message: { raw: messageHash },
+        message: { raw: rawMessage },
     });
 
     // Convert to 65-byte format
     const sigBytes = Buffer.from(signature.slice(2), 'hex');
     return new Uint8Array(sigBytes);
 }
+
 
 /**
  * Build register_output_root instruction data
