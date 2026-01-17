@@ -53,8 +53,8 @@ async function main() {
     logger.info(`Current Base Block: ${currentBlock}`);
 
     // Target block (must be divisible by 300)
-    // Force to 36409800 to cover our test tx at block 36409637
-    const targetBlock = 36432300n;
+    // Round down to most recent 300-aligned block
+    const targetBlock = currentBlock - (currentBlock % 300n);
     logger.info(`Target Block (aligned): ${targetBlock}`);
 
     // Get MMR root and nonce at target block

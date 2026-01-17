@@ -14,7 +14,19 @@ export async function getSolanaCliConfigKeypairSigner() {
   }
 
   const homeDir = homedir();
-  const keypairPath = join(homeDir, ".config/solana/id.json");
+  const configPath = join(homeDir, ".config/solana/cli/config.yml");
+
+  // Try to read the actual Solana CLI config to get the keypair path
+  let keypairPath = join(homeDir, ".config/solana/id.json"); // fallback
+
+  if (existsSync(configPath)) {
+    const configContent = await Bun.file(configPath).text();
+    const keypairMatch = configContent.match(/^keypair_path:\s*(.+)$/im);
+    if (keypairMatch) {
+      keypairPath = keypairMatch[1].trim();
+    }
+  }
+
   if (!existsSync(keypairPath)) {
     throw new Error(`Solana CLI config keypair not found at: ${keypairPath}`);
   }

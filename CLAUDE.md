@@ -18,6 +18,19 @@ The bridge consists of two main components:
 
 ## Development Commands
 
+### Privacy Bridge (Quick Start)
+
+```bash
+cd scripts
+
+# Run privacy demo (shows complete flow)
+EVM_PRIVATE_KEY=0x... bun run src/demo-privacy-e2e.ts
+
+# Start privacy relayers (separate terminals)
+EVM_PRIVATE_KEY=0x... bun run src/privacy-relayer-sol-to-base.ts --monitor
+EVM_PRIVATE_KEY=0x... bun run src/privacy-relayer-base-to-sol.ts --monitor
+```
+
 ### Base Contracts (Foundry)
 
 ```bash
@@ -31,6 +44,10 @@ forge test
 
 # Run fork tests against Base Sepolia
 forge test --fork-url https://sepolia.base.org -vvv
+
+# Privacy fork tests (with real Inco)
+forge test --match-contract ConfidentialBridgeForkTest --fork-url https://sepolia.base.org -v
+forge test --match-contract ConfidentialBridgeE2EForkTest --fork-url https://sepolia.base.org -vv
 
 # Test coverage
 make coverage
@@ -142,6 +159,7 @@ A unified client (`BidirectionalBridge`) manages operations across both chains:
 
 - Uses Anchor framework with Rust
 - Requires keypair files in `keypairs/` directory
+- Scripts automatically resolve deployer keypair from `~/.config/solana/cli/config.yml`
 - Two environments: devnet-alpha and devnet-prod
 
 ## Testing Strategy
@@ -320,6 +338,7 @@ cd scripts && bun run src/set-oracle-signers.ts
 ```
 
 This requires the **program upgrade authority** (deployer) keypair to sign. The script:
+
 - Derives the bridge PDA and program data address
 - Builds a `BaseOracleConfig` with threshold=1 and the EVM signer address
 - Sends the `setOracleSigners` instruction
@@ -331,6 +350,7 @@ This requires the **program upgrade authority** (deployer) keypair to sign. The 
 **Symptom**: Oracle signatures were being rejected even after setting the correct signer
 
 **Root Cause**: In `clients/ts/src/base-to-solana-oracle.ts`, the `signOutputRoot` function was:
+
 1. Computing `messageHash` with EIP-191 prefix applied
 2. Then calling `signMessage({ raw: messageHash })` which adds **another** EIP-191 prefix
 
@@ -349,6 +369,7 @@ const signature = await account.signMessage({ message: { raw: rawMessage } }); /
 ```
 
 The Solana program at `register_output_root.rs:8` computes:
+
 ```rust
 // message = keccak256("\x19Ethereum Signed Message:\n" || len || (output_root || base_block_number_be || total_leaf_count_be))
 ```
@@ -360,11 +381,13 @@ So viem's `signMessage` should receive the raw bytes (output_root || block_numbe
 **Symptom**: Oracle was using a different bridge than the CLI tools
 
 **Root Cause**: The oracle's `TESTNET_CONFIG` in `base-to-solana-oracle.ts` had:
+
 ```typescript
 baseBridgeAddress: '0x2B3550823301752c95290ec6f8781E88F0Bac8c4'  // Wrong!
 ```
 
 But the CLI's `testnet-alpha` config uses:
+
 ```typescript
 bridgeContract: '0x8e46419298a9620ea326113baf4019a23594bb11'  // Correct!
 ```
@@ -391,8 +414,9 @@ cd scripts && EVM_PRIVATE_KEY=0x... bun run src/fast-forward-oracle.ts
 ```
 
 This script:
+
 1. Gets the current Base block number
-2. Reads the MMR root at a target aligned block
+2. Calculates the most recent 300-block aligned checkpoint automatically
 3. Signs the output root message
 4. Calls `registerOutputRoot` on Solana at the target block
 
@@ -483,7 +507,6 @@ cd scripts && bun run cli sol bridge relay-message \
 | `custom program error: #0` | Account already exists | Block already registered, skip ahead |
 | `Unsupported program id` | Instruction targets invalid program | Use valid Solana program ID in bridgeCall |
 
-
 ## Base Relayer Implementation (January 17, 2026)
 
 This section documents the implementation of the Base Relayer (Solana → Base direction) and the automation of the entire bidirectional flow.
@@ -509,17 +532,21 @@ We replaced the complex `services/relayer` implementation with two lightweight, 
 To run a fully automated bidirectional bridge, open two terminals:
 
 #### Terminal 1: Solana → Base Relayer
+
 ```bash
 cd scripts
 EVM_PRIVATE_KEY=0x... bun run src/auto-relayer.ts
 ```
+
 *Monitors Solana 24/7. When a user calls `bridge-call` on Solana, this script picks it up and executes it on Base.*
 
 #### Terminal 2: Base → Solana Relayer
+
 ```bash
 cd scripts
 EVM_PRIVATE_KEY=0x... bun run src/auto-relayer-base-sol.ts --monitor
 ```
+
 *Monitors Base 24/7. When a user creates a transaction on Base, this script syncs the oracle, proves the message, and relays it to Solana.*
 
 ### Manual Workflows (Fallback)
@@ -527,6 +554,7 @@ EVM_PRIVATE_KEY=0x... bun run src/auto-relayer-base-sol.ts --monitor
 If automation fails or you want to relay a specific message manually:
 
 **Solana → Base:**
+
 ```bash
 # Relay generic message
 cd scripts
@@ -538,8 +566,217 @@ EVM_PRIVATE_KEY=0x... bun run src/register-and-relay.ts <SOLANA_MESSAGE_PUBKEY>
 ```
 
 **Base → Solana:**
+
 ```bash
 # Relay specific Base transaction
 cd scripts
 EVM_PRIVATE_KEY=0x... bun run src/auto-relayer-base-sol.ts <BASE_TX_HASH>
 ```
+
+---
+
+## Privacy Bridge with Inco Lightning FHE
+
+Dark Bridge includes a **complete privacy layer** using Inco Lightning for Fully Homomorphic Encryption (FHE), making it the **first bidirectional privacy bridge** between Base (EVM) and Solana (SVM).
+
+### Privacy Features
+
+- ✅ **Encrypted Amounts**: All transfer amounts encrypted using FHE
+- ✅ **Encrypted Balances**: Token balances stored as encrypted handles
+- ✅ **Cross-Chain Privacy**: Encryption preserved during bridging
+- ✅ **Operation Privacy**: Add, subtract, compare on encrypted data
+- ✅ **Handle Verification**: Prevents swap attacks via nonce mapping
+
+### Quick Start: Privacy Bridge
+
+```bash
+cd scripts
+
+# 1. Run the privacy demo (explains everything)
+EVM_PRIVATE_KEY=0x... bun run src/demo-privacy-e2e.ts
+
+# 2. Start privacy relayers (in separate terminals)
+EVM_PRIVATE_KEY=0x... bun run src/privacy-relayer-sol-to-base.ts --monitor
+EVM_PRIVATE_KEY=0x... bun run src/privacy-relayer-base-to-sol.ts --monitor
+```
+
+### Privacy Architecture
+
+#### EVM Side (Base Sepolia)
+
+**Contracts:**
+
+- `ConfidentialBridge.sol` - Privacy layer for cross-chain transfers
+- `ConfidentialCrossChainERC20.sol` - ERC20 with encrypted balances (`euint256`)
+
+**Deployed:**
+
+- ConfidentialBridge: `0x09ED10e70F46C9a45cE03Da0bC5Bdb9434d33D59`
+- ConfidentialToken: `0x9DE43656041A9Fce12f1Fb848CCB0D9DF44B5e20`
+
+#### SVM Side (Solana Devnet)
+
+**Program:**
+
+- `confidential` module with `ConfidentialVault` accounts
+- Encrypted balances using `Euint128` (16 bytes)
+- CPI to Inco Lightning program (`5sjEbPiqgZrYwR31ahR6Uk9wf5awoX61YGg7jExQSwaj`)
+
+**Deployed:**
+
+- Bridge Program: `EEMKRm1ANMBZHS6yEi67bKVuZDPhztQHVWBzoFnoVbh9`
+
+### Privacy Flow
+
+**Base → Solana:**
+
+```
+1. Encrypt amount: @inco/js → euint256 ciphertext
+2. Call: ConfidentialBridge.bridgePrivateToSolana()
+3. Burns from ConfidentialCrossChainERC20 (encrypted)
+4. Privacy relayer converts: euint256 → Euint128
+5. Mints to ConfidentialVault on Solana (encrypted)
+✅ Amount NEVER decrypted!
+```
+
+**Solana → Base:**
+
+```
+1. Encrypt amount: @inco/solana-sdk → Euint128 ciphertext
+2. Call: bridge.bridge_confidential_out()
+3. Burns from ConfidentialVault (encrypted)
+4. Privacy relayer converts: Euint128 → euint256
+5. Mints to ConfidentialCrossChainERC20 on Base (encrypted)
+✅ Amount NEVER decrypted!
+```
+
+### Privacy Testing
+
+**Fork Tests (Base):**
+
+```bash
+cd base
+
+# Basic privacy tests
+forge test --match-contract ConfidentialBridgeForkTest \
+  --fork-url https://sepolia.base.org -v
+
+# E2E with real Inco ciphertexts
+forge test --match-contract ConfidentialBridgeE2EForkTest \
+  --fork-url https://sepolia.base.org -vv
+
+# Security: Handle verification
+forge test --match-contract ConfidentialBridgeHandleVerificationTest \
+  --fork-url https://sepolia.base.org -vv
+```
+
+**Generate Real Ciphertexts:**
+
+```bash
+cd clients/ts
+
+# MUST use bun (not node) due to @inco/js ESM issues
+bun run src/generate-test-ciphertexts.ts
+```
+
+**Encrypt/Decrypt Examples:**
+
+```typescript
+// Encrypt for Base
+import { Lightning } from '@inco/js/lite';
+const zap = await Lightning.latest('testnet', 84532);
+const encrypted = await zap.encrypt(amount, {
+  accountAddress: userAddress,
+  dappAddress: confidentialBridge
+});
+
+// Encrypt for Solana
+import { encryptValue } from '@inco/solana-sdk/encryption';
+const encrypted = await encryptValue(amountBigInt);
+
+// Decrypt (requires permission)
+import { decrypt } from '@inco/solana-sdk/attested-decrypt';
+const result = await decrypt([handle], {
+  address: wallet.publicKey,
+  signMessage: wallet.signMessage,
+});
+```
+
+### Security: Handle Verification
+
+Prevents handle swap attacks via nonce-based verification:
+
+```solidity
+// On bridgePrivateToSolana (Base):
+expectedHandles[nonce] = euint256.unwrap(amount);
+
+// On receiveFromSolana (Base):
+bytes32 received = euint256.unwrap(amount);
+if (received != expectedHandles[nonce]) revert HandleMismatch();
+delete expectedHandles[nonce]; // Prevent replay
+```
+
+### Privacy Documentation
+
+- **[PRIVACY_ARCHITECTURE.md](PRIVACY_ARCHITECTURE.md)** - Complete technical architecture
+- **[PRIVACY_TESTING_GUIDE.md](PRIVACY_TESTING_GUIDE.md)** - Testing workflows and troubleshooting
+- **[PRIVACY_HACKATHON_SUMMARY.md](PRIVACY_HACKATHON_SUMMARY.md)** - Hackathon submission overview
+
+### Known Issues: Privacy
+
+#### @inco/js ESM Package ✅ RESOLVED
+
+Use **bun** instead of Node.js:
+
+```bash
+# Install bun
+curl -fsSL https://bun.sh/install | bash
+
+# Run with bun
+bun run src/demo-private-bridge.ts
+```
+
+**Fix for `Lightning.latest()`:**
+
+```typescript
+// ❌ Wrong
+this.baseZap = Lightning.latest(config.incoEnvironment, chainId);
+
+// ✅ Correct (await the Promise)
+this.baseZap = await Lightning.latest(config.incoEnvironment, chainId);
+```
+
+#### Inco Fees Required
+
+FHE operations require Inco fees (~0.005 ETH per operation on testnet):
+
+```bash
+# Check current fee
+cast call <CONFIDENTIAL_BRIDGE> "getIncoFee()(uint256)" \
+  --rpc-url https://sepolia.base.org
+
+# Send transaction with fee
+--value 0.01ether
+```
+
+#### Mock Ciphertexts Rejected
+
+Inco precompiles reject fake encrypted values. Use real ciphertexts:
+
+```bash
+cd clients/ts
+bun run src/generate-test-ciphertexts.ts
+```
+
+### Privacy Benchmarks
+
+| Operation | Gas (Base) | Compute (Solana) | Inco Fee |
+|-----------|-----------|------------------|----------|
+| Encrypt balance | ~200k | N/A | 0.005 ETH |
+| Private transfer | ~250k | ~15k CU | 0.005 ETH |
+| Private bridge | ~220k | ~12k CU | 0.005 ETH |
+| Handle verification | ~50k | N/A | 0.003 ETH |
+
+*Testnet measurements*
+
+---
