@@ -73,7 +73,7 @@ export const CONFIGS = {
       // Programs - OUR initialized bridge programs
       bridgeProgram: address("EEMKRm1ANMBZHS6yEi67bKVuZDPhztQHVWBzoFnoVbh9"),
       baseRelayerProgram: address(
-        "hSNmwoXiEZzB5wvjqpKDxuHkim4AabsGki2NTcXwjsc"
+        "Ma6Fkuhx7SDzPGxEECovenoX62iBAf8kabWcfQx9qL9"
       ),
 
       // SPLs (can use existing ones for testing)

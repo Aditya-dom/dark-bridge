@@ -16,7 +16,7 @@ use state::*;
 #[cfg(test)]
 mod test_utils;
 
-declare_id!("hSNmwoXiEZzB5wvjqpKDxuHkim4AabsGki2NTcXwjsc");
+declare_id!("Ma6Fkuhx7SDzPGxEECovenoX62iBAf8kabWcfQx9qL9");
 
 #[program]
 pub mod base_relayer {
