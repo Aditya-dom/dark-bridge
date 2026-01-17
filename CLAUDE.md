@@ -483,3 +483,63 @@ cd scripts && bun run cli sol bridge relay-message \
 | `custom program error: #0` | Account already exists | Block already registered, skip ahead |
 | `Unsupported program id` | Instruction targets invalid program | Use valid Solana program ID in bridgeCall |
 
+
+## Base Relayer Implementation (January 17, 2026)
+
+This section documents the implementation of the Base Relayer (Solana → Base direction) and the automation of the entire bidirectional flow.
+
+### Implementation Status
+
+- **Base Relayer Program**: Deployed on Solana devnet (`Ma6Fkuhx7SDzPGxEECovenoX62iBAf8kabWcfQx9qL9`).
+- **Relayer Configuration**: Initialized with `Cfg` PDA (`6aDzYCjdz5kCkwgGgJrPav3YcJyT6vkVCa46ULniHqoy`).
+- **Pay for Relay**: Currently disabled on-chain function due to gas limit constraints (requires ~1.5M gas, initialized with 1M).
+- **Auto-Relayers**: Fully functional off-chain automation for both directions.
+
+### New Automation Scripts
+
+We replaced the complex `services/relayer` implementation with two lightweight, robust scripts in `scripts/src/`:
+
+| Script | Direction | Description |
+|--------|-----------|-------------|
+| `auto-relayer.ts` | **Solana → Base** | Monitors Solana for outgoing messages, registers them on Base validator, and relays them to Base bridge. |
+| `auto-relayer-base-sol.ts` | **Base → Solana** | Monitors Base for transactions, syncs oracle if needed, proves message on Solana, and relays it. |
+
+### How to Run (End-to-End Automation)
+
+To run a fully automated bidirectional bridge, open two terminals:
+
+#### Terminal 1: Solana → Base Relayer
+```bash
+cd scripts
+EVM_PRIVATE_KEY=0x... bun run src/auto-relayer.ts
+```
+*Monitors Solana 24/7. When a user calls `bridge-call` on Solana, this script picks it up and executes it on Base.*
+
+#### Terminal 2: Base → Solana Relayer
+```bash
+cd scripts
+EVM_PRIVATE_KEY=0x... bun run src/auto-relayer-base-sol.ts --monitor
+```
+*Monitors Base 24/7. When a user creates a transaction on Base, this script syncs the oracle, proves the message, and relays it to Solana.*
+
+### Manual Workflows (Fallback)
+
+If automation fails or you want to relay a specific message manually:
+
+**Solana → Base:**
+```bash
+# Relay generic message
+cd scripts
+EVM_PRIVATE_KEY=0x... bun run src/auto-relayer.ts <SOLANA_MESSAGE_PUBKEY>
+
+# Or using the older manual script
+cd scripts
+EVM_PRIVATE_KEY=0x... bun run src/register-and-relay.ts <SOLANA_MESSAGE_PUBKEY>
+```
+
+**Base → Solana:**
+```bash
+# Relay specific Base transaction
+cd scripts
+EVM_PRIVATE_KEY=0x... bun run src/auto-relayer-base-sol.ts <BASE_TX_HASH>
+```
