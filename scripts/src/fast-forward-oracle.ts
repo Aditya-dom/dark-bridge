@@ -21,7 +21,10 @@ import { logger } from "@internal/logger";
 // Constants
 const BRIDGE_PROGRAM_ID = address("EEMKRm1ANMBZHS6yEi67bKVuZDPhztQHVWBzoFnoVbh9");
 const BASE_BRIDGE = "0x8e46419298a9620ea326113baf4019a23594bb11" as const;
-const EVM_PRIVATE_KEY = process.env.EVM_PRIVATE_KEY || "0x2526bbb0e6f0b2b5974fd974d7d26907e584d44c1de55876d2ef4b794fae97db";
+const EVM_PRIVATE_KEY = process.env.EVM_PRIVATE_KEY;
+if (!EVM_PRIVATE_KEY) {
+    throw new Error("EVM_PRIVATE_KEY environment variable is required");
+}
 
 // ABI for getting MMR root
 const BRIDGE_ABI = [
@@ -51,7 +54,7 @@ async function main() {
 
     // Target block (must be divisible by 300)
     // Force to 36409800 to cover our test tx at block 36409637
-    const targetBlock = 36409800n;
+    const targetBlock = 36432300n;
     logger.info(`Target Block (aligned): ${targetBlock}`);
 
     // Get MMR root and nonce at target block

@@ -54,7 +54,7 @@ export const argsSchema = z.object({
       z.string().startsWith("0x", "Data must start with 0x").brand<"data">(),
     ])
     .default("increment"),
-  payForRelay: z.boolean().default(true),
+  payForRelay: z.boolean().default(false),
 });
 
 type Args = z.infer<typeof argsSchema>;
