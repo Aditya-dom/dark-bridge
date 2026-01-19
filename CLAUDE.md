@@ -1058,7 +1058,16 @@ bun run src/generate-test-ciphertexts.ts
 
 The Base ↔ Solana privacy bridge has been **fully tested and verified** with real Inco Lightning integration on both chains.
 
-### Successful Transactions
+### Successful Transactions (DARK Token - v6)
+
+| Direction | Chain | Transaction |
+|-----------|-------|-------------|
+| Mint DARK tokens | Base Sepolia | `0x7b06e1547352b1488b47db06f050ba5c88e9e04258b47f47a2ea0f30d1762051` |
+| Bridge DARK → Solana | Base Sepolia | `0x9160806facee0a059562a2b11203361f3eeb9e24c3a522e51262897baeeab5da` |
+| Initialize Vault | Solana Devnet | `2ba7LcvHwqFzkoH6sys5ifrp1d9ffo7FKDTqGciK6cwyef6LZLze1ULERTUV2Edbfpo2FpUH6FVnQv6PLgaHM2bk` |
+| Relay to Solana | Solana Devnet | `5RqumCMF3NDcbVcZ9mFBxQnWPFgH8u6nvERH8cgKGhgG73SfFcDksbpihVyTibL6YPJ8PCHGiLYdf77FY8JpQJht` |
+
+### Successful Transactions (Legacy - v5)
 
 | Direction | Chain | Transaction |
 |-----------|-------|-------------|
@@ -1115,9 +1124,15 @@ CPI Calls (from transaction logs):
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Deployed Contract Addresses (v5 - January 2026)
+### Deployed Contract Addresses (v6 - January 2026)
 
-**Base Sepolia:**
+**Base Sepolia (DARK Token - Latest):**
+| Contract | Address |
+|----------|---------|
+| ConfidentialBridge | `0xfa1CBa0067D967bbD17eFd2Ab815B92AaB418A7f` |
+| ConfidentialCrossChainERC20 (DARK) | `0xc4104aCBa7059c2f8FEFdf746a1c4b9B8a89Ec7D` |
+
+**Base Sepolia (v5 - Legacy):**
 | Contract | Address |
 |----------|---------|
 | ConfidentialBridge | `0x1C5d960F3757C59BEC347a536F4B811310B6f2aa` |
@@ -1129,10 +1144,158 @@ CPI Calls (from transaction logs):
 |---------|---------|
 | Bridge Program | `EEMKRm1ANMBZHS6yEi67bKVuZDPhztQHVWBzoFnoVbh9` |
 | Bridge Authority PDA | `k9XhdJyuGbmkSePFBzZ7eUjj9EmHANQL9YivYYL53rr` |
-| Example Vault PDA | `Gui8LGdtRwLJL772q1YuVJyRCD8RFbUe6rHiZu6f8Goc` |
+| DARK Token Vault PDA | `DNFNNzesmHdLQ5rG7UMa9QMcDaydkrJAdygwE8vDpNwk` |
+| Legacy Vault PDA | `Gui8LGdtRwLJL772q1YuVJyRCD8RFbUe6rHiZu6f8Goc` |
 | Inco Lightning | `5sjEbPiqgZrYwR31ahR6Uk9wf5awoX61YGg7jExQSwaj` |
 
+### Latest Verified Transactions (DARK Token - January 2026)
+
+**Base → Solana (Complete E2E):**
+| Step | Chain | Transaction |
+|------|-------|-------------|
+| Mint 1000 DARK | Base Sepolia | `0x7b06e1547352b1488b47db06f050ba5c88e9e04258b47f47a2ea0f30d1762051` |
+| Bridge 10 DARK to Solana | Base Sepolia | `0x9160806facee0a059562a2b11203361f3eeb9e24c3a522e51262897baeeab5da` |
+| Init Solana Vault | Solana Devnet | `2ba7LcvHwqFzkoH6sys5ifrp1d9ffo7FKDTqGciK6cwyef6LZLze1ULERTUV2Edbfpo2FpUH6FVnQv6PLgaHM2bk` |
+| Relay to Solana | Solana Devnet | `5RqumCMF3NDcbVcZ9mFBxQnWPFgH8u6nvERH8cgKGhgG73SfFcDksbpihVyTibL6YPJ8PCHGiLYdf77FY8JpQJht` |
+
+**Solana → Base (Complete E2E):**
+| Step | Chain | Transaction |
+|------|-------|-------------|
+| Bridge 5 DARK to Base | Solana Devnet | `4NQskmaquWqomJpy8JCpTddPXhujiVVYdyNwS4rDow18NCs7B9rfc4cXB8fwHQYeLC5EXiRRpLoSveQjsp2ifkAD` |
+| Relay/Mint on Base | Base Sepolia | `0x83e642c48fd4dc13d618f3d4b716be63c2a19346393e4afa0e2400ed6c0d7aea` |
+
+### New Demo Functions (v6)
+
+The v6 ConfidentialCrossChainERC20 contract includes these demo helper functions:
+
+```solidity
+// Mint tokens for testing (encrypts plaintext amount via TEE)
+function confidentialMintForDemo(address to, uint256 plainAmount) external payable;
+
+// Set remote Solana token address (one-time)
+function setRemoteTokenForDemo(bytes32 remoteToken_) external;
+```
+
+**Usage:**
+```bash
+# Mint DARK tokens for testing
+cast send 0xc4104aCBa7059c2f8FEFdf746a1c4b9B8a89Ec7D \
+  "confidentialMintForDemo(address,uint256)" \
+  <YOUR_ADDRESS> 1000 \
+  --rpc-url https://sepolia.base.org \
+  --private-key $PRIVATE_KEY \
+  --value 0.001ether
+```
+
 ### Key Implementation Details
+
+**Event Parsing with Discriminator (CRITICAL):**
+
+Anchor events are identified by their discriminator (sha256 of event name). When parsing `ConfidentialBridgeOutEvent`, you MUST check the discriminator to avoid picking up other events:
+
+```typescript
+// In privacy-relayer-sol-to-base.ts:
+// sha256("event:ConfidentialBridgeOutEvent")[0:8] = fee3f47c36edab41
+const EXPECTED_DISCRIMINATOR = Buffer.from("fee3f47c36edab41", "hex");
+
+for (const log of logs) {
+    if (log.startsWith("Program data:")) {
+        const data = Buffer.from(log.replace("Program data: ", ""), "base64");
+        const discriminator = data.subarray(0, 8);
+        if (!discriminator.equals(EXPECTED_DISCRIMINATOR)) {
+            continue; // Not our event, skip
+        }
+        // Parse event data...
+    }
+}
+```
+
+**Solana → Base: Proper Attested Decrypt Flow (UI-Based):**
+
+When building a UI, the user's wallet can sign the attested decrypt request directly:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│          Solana → Base with User-Signed Attestation             │
+├─────────────────────────────────────────────────────────────────┤
+│ 1. User burns on Solana → emits handle                          │
+│ 2. UI prompts user to sign (proves ownership of handle)         │
+│ 3. Inco covalidator returns plaintext + attestation signature   │
+│ 4. UI mints on Base with the real plaintext amount              │
+│                                                                 │
+│ ✨ No fixed demo amount - actual decrypted value used!          │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+```typescript
+// frontend/src/lib/attested-decrypt.ts
+import bs58 from 'bs58';
+
+const INCO_ENDPOINT = "https://grpc.solana-devnet.alpha.devnet.inco.org/crypto/getDecryptAttested";
+
+async function requestAttestedDecrypt(handle: bigint, wallet: WalletAdapter) {
+    // User signs the handle to prove ownership
+    const messageBytes = new TextEncoder().encode(handle.toString());
+    const signatureBytes = await wallet.signMessage(messageBytes);
+    const signature = bs58.encode(signatureBytes);
+    
+    // Call Inco covalidator with signed request
+    const response = await fetch(INCO_ENDPOINT, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            handle: handle.toString(),
+            address: wallet.publicKey.toBase58(),
+            signature: signature,
+        }),
+    });
+    
+    const data = await response.json();
+    return {
+        plaintext: BigInt(data.plaintext),      // Actual decrypted amount!
+        signature: data.signature,               // Covalidator attestation
+    };
+}
+```
+
+**React Hook Usage:**
+
+```typescript
+// In your bridge UI component:
+const { state, bridge } = useSolanaToBaseBridge();
+
+// User clicks "Bridge"
+await bridge(amountBigInt, DARK_TOKEN_MINT);
+
+// Flow:
+// 1. Burns on Solana (user signs tx)
+// 2. Prompts user to sign handle for attested decrypt
+// 3. Mints on Base with real plaintext amount
+```
+
+See `frontend/src/hooks/useSolanaToBaseBridge.ts` for complete implementation.
+
+**⚠️ Known Issue: Solana→Base Attested Decrypt ACL**
+
+The current Solana bridge program does NOT grant `allow` permission on the `actual_amount` handle emitted in `ConfidentialBridgeOutEvent`. This means attested decrypt fails with "Address is not allowed to decrypt this handle".
+
+**Workaround (Demo Mode):** Use `confidentialMintForDemo()` with a fixed amount:
+```typescript
+// In privacy-relayer-sol-to-base.ts
+const DEMO_AMOUNT = 5n; // Fixed demo amount
+await tokenContract.confidentialMintForDemo(destination, DEMO_AMOUNT);
+```
+
+**Fix (Requires Program Upgrade):** The Solana bridge program has been updated in `solana/programs/bridge/src/confidential/instructions.rs` to grant ACL on both handles:
+```rust
+// Grant allowance to owner for updated balance AND the bridged amount
+if ctx.remaining_accounts.len() >= 4 {
+    // Allow for actual_amount (for attested decrypt)
+    allow(cpi_ctx, actual_amount.0, true, vault.owner)?;
+}
+```
+
+After rebuilding and redeploying the Solana program, the UI-based attested decrypt flow will work properly.
 
 **Relayer Signing for Inco CPIs:**
 

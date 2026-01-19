@@ -40,9 +40,9 @@ if (!EVM_PRIVATE_KEY) {
 
 const evmAccount = privateKeyToAccount(EVM_PRIVATE_KEY as `0x${string}`);
 
-// Deployed addresses (v5 - with setRemoteTokenForDemo)
-const CONFIDENTIAL_BRIDGE = "0x1C5d960F3757C59BEC347a536F4B811310B6f2aa" as Address;
-const CONFIDENTIAL_TOKEN = "0x2C492Fc664e54903A966d5D7f666556FF5BeF9F1" as Address;
+// Deployed addresses (v6 - DARK token with confidentialMintForDemo)
+const CONFIDENTIAL_BRIDGE = "0xfa1CBa0067D967bbD17eFd2Ab815B92AaB418A7f" as Address;
+const CONFIDENTIAL_TOKEN = "0xc4104aCBa7059c2f8FEFdf746a1c4b9B8a89Ec7D" as Address;
 
 // Solana recipient (Solana CLI wallet - has initialized vault)
 const SOLANA_RECIPIENT = new PublicKey("BfxvKDgh3nWpM5JX2NF7M7MJLirJkuWHMM3n5JohStx");

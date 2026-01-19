@@ -82,8 +82,11 @@ pub fn bridge_confidential_out<'info>(
     let new_balance: Euint128 = e_sub(cpi_ctx, vault.encrypted_balance, actual_amount, 0)?;
     vault.encrypted_balance = new_balance;
 
-    // Grant allowance to owner for updated balance
+    // Grant allowance to owner for updated balance AND the bridged amount
+    // The bridged amount needs allow so user can decrypt via attested decrypt
+    // for cross-chain handle conversion
     if ctx.remaining_accounts.len() >= 2 {
+        // Allow for new balance (so user can see their remaining balance)
         let cpi_ctx = CpiContext::new(
             inco.clone(),
             Allow {
@@ -94,6 +97,21 @@ pub fn bridge_confidential_out<'info>(
             },
         );
         allow(cpi_ctx, new_balance.0, true, vault.owner)?;
+
+        // Also allow for actual_amount (so user can decrypt for cross-chain relay)
+        // This is critical for attested decrypt to work
+        if ctx.remaining_accounts.len() >= 4 {
+            let cpi_ctx = CpiContext::new(
+                inco.clone(),
+                Allow {
+                    allowance_account: ctx.remaining_accounts[2].clone(),
+                    signer: signer.clone(),
+                    allowed_address: ctx.remaining_accounts[3].clone(),
+                    system_program: ctx.accounts.system_program.to_account_info(),
+                },
+            );
+            allow(cpi_ctx, actual_amount.0, true, vault.owner)?;
+        }
     }
 
     // Emit bridge message event

@@ -288,6 +288,31 @@ contract ConfidentialBridge is ReentrancyGuardTransient, OwnableRoles, Initializ
         emit ConfidentialBridgeReceived(0, localToken, to, amount);
     }
 
+    /// @notice DEMO ONLY: Receive confidential tokens from Solana without bridge restriction.
+    /// @dev WARNING: This is for hackathon demo only - remove in production!
+    /// @param localToken The confidential token address.
+    /// @param to The recipient address.
+    /// @param encryptedAmount The encrypted amount (16 bytes for u128 handle).
+    function receiveFromSolanaForDemo(
+        address localToken,
+        address to,
+        bytes calldata encryptedAmount
+    ) external payable nonReentrant {
+        require(localToken != address(0), ZeroAddress());
+        require(to != address(0), ZeroAddress());
+
+        // Mint confidential tokens to recipient
+        ConfidentialCrossChainERC20(localToken).confidentialMint{value: msg.value}(
+            to,
+            encryptedAmount
+        );
+
+        euint256 amount = encryptedAmount.newEuint256(msg.sender);
+
+        // Emit event without nonce (demo)
+        emit ConfidentialBridgeReceived(0, localToken, to, amount);
+    }
+
     //////////////////////////////////////////////////////////////
     ///                       View Functions                   ///
     //////////////////////////////////////////////////////////////

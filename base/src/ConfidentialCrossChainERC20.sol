@@ -430,6 +430,34 @@ contract ConfidentialCrossChainERC20 is Initializable {
         _remoteToken = remoteToken_;
     }
 
+    /// @notice Mint confidential tokens for demo purposes.
+    /// @dev For hackathon demo - allows minting tokens to test the bridge.
+    /// @param to Recipient address.
+    /// @param plainAmount Plain amount to encrypt and mint.
+    function confidentialMintForDemo(address to, uint256 plainAmount) external payable {
+        require(to != address(0), ZeroAddress());
+        require(plainAmount > 0, "Amount must be positive");
+
+        // Create encrypted amount from plaintext
+        euint256 amount = e.asEuint256(plainAmount);
+        e.allow(amount, address(this));
+
+        // Add to balance
+        if (euint256.unwrap(_balances[to]) == bytes32(0)) {
+            _balances[to] = amount;
+        } else {
+            _balances[to] = e.add(_balances[to], amount);
+        }
+        e.allow(_balances[to], address(this));
+        e.allow(_balances[to], to);
+
+        // Update total supply
+        totalSupply = e.add(totalSupply, amount);
+        e.reveal(totalSupply);
+
+        emit ConfidentialMint(to, amount);
+    }
+
     //////////////////////////////////////////////////////////////
     ///                       Internal Functions               ///
     //////////////////////////////////////////////////////////////

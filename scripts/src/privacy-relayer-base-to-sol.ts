@@ -48,9 +48,9 @@ if (!EVM_PRIVATE_KEY) {
 
 const evmAccount = privateKeyToAccount(EVM_PRIVATE_KEY as `0x${string}`);
 
-// Deployed addresses (v5 - with setRemoteTokenForDemo)
-const CONFIDENTIAL_BRIDGE_ADDRESS = "0x1C5d960F3757C59BEC347a536F4B811310B6f2aa" as Address;
-const CONFIDENTIAL_TOKEN_ADDRESS = "0x2C492Fc664e54903A966d5D7f666556FF5BeF9F1" as Address;
+// Deployed addresses (v6 - DARK token with confidentialMintForDemo)
+const CONFIDENTIAL_BRIDGE_ADDRESS = "0xfa1CBa0067D967bbD17eFd2Ab815B92AaB418A7f" as Address;
+const CONFIDENTIAL_TOKEN_ADDRESS = "0xc4104aCBa7059c2f8FEFdf746a1c4b9B8a89Ec7D" as Address;
 
 // Bridge Program ID
 const BRIDGE_PROGRAM_ID = new PublicKey("EEMKRm1ANMBZHS6yEi67bKVuZDPhztQHVWBzoFnoVbh9");
@@ -168,11 +168,11 @@ async function relayConfidentialToSolana(txHash: string): Promise<boolean> {
         const event = parseConfidentialBridgeInitiatedEvent(receipt.logs);
 
         if (!event) {
-            console.log("   ❌ No ConfidentialBridgeInitiated event found");
+            console.log("    No ConfidentialBridgeInitiated event found");
             return false;
         }
 
-        console.log(`   ✅ Found confidential bridge event:`);
+        console.log(`    Found confidential bridge event:`);
         console.log(`      Nonce: ${event.nonce}`);
         console.log(`      Local Token: ${event.localToken}`);
         console.log(`      To Solana: ${event.toSolana}`);
@@ -227,7 +227,7 @@ async function relayConfidentialToSolana(txHash: string): Promise<boolean> {
         const vaultAccountInfo = await connection.getAccountInfo(vaultPda);
         
         if (!vaultAccountInfo) {
-            console.log(`\n   ⚠️  Vault does not exist for recipient!`);
+            console.log(`\n    Vault does not exist for recipient!`);
             console.log(`   The recipient needs to initialize a ConfidentialVault first.`);
             console.log(`   Vault PDA: ${vaultPda.toBase58()}`);
             console.log(`   Owner: ${recipientPubkey.toBase58()}`);
@@ -256,7 +256,7 @@ async function relayConfidentialToSolana(txHash: string): Promise<boolean> {
             Buffer.from(baseSender),
         ]);
 
-        console.log(`\n   📝 Building relay_receive_confidential instruction:`);
+        console.log(`\n   Building relay_receive_confidential instruction:`);
         console.log(`      Discriminator: ${discriminator.toString("hex")}`);
         console.log(`      Encrypted amount: ${encryptedAmountBytes.length} bytes`);
         console.log(`      Base sender: 0x${Buffer.from(baseSender).toString("hex")}`);
@@ -287,7 +287,7 @@ async function relayConfidentialToSolana(txHash: string): Promise<boolean> {
             data: instructionData,
         });
 
-        console.log(`\n   📤 Sending Solana transaction...`);
+        console.log(`\n    Sending Solana transaction...`);
 
         // 11. Send transaction
         const { Transaction, sendAndConfirmTransaction } = await import("@solana/web3.js");
@@ -301,12 +301,12 @@ async function relayConfidentialToSolana(txHash: string): Promise<boolean> {
                 { commitment: "confirmed" }
             );
             
-            console.log(`   ✅ Transaction confirmed!`);
+            console.log(`    Transaction confirmed!`);
             console.log(`   Signature: ${signature}`);
             console.log(`   Explorer: https://explorer.solana.com/tx/${signature}?cluster=devnet`);
             return true;
         } catch (txError: any) {
-            console.error(`   ❌ Transaction failed: ${txError.message}`);
+            console.error(`    Transaction failed: ${txError.message}`);
             if (txError.logs) {
                 console.error(`   Logs:`);
                 txError.logs.forEach((log: string) => console.error(`      ${log}`));
@@ -315,7 +315,7 @@ async function relayConfidentialToSolana(txHash: string): Promise<boolean> {
         }
 
     } catch (error: any) {
-        console.error(`   ❌ Error: ${error.message}`);
+        console.error(`    Error: ${error.message}`);
         if (error.cause) {
             console.error(`   Cause: ${JSON.stringify(error.cause)}`);
         }
@@ -357,11 +357,11 @@ async function monitorMode() {
                         });
 
                         if (decoded.eventName === "ConfidentialBridgeInitiated") {
-                            console.log("   📦 Confidential bridge event detected!");
+                            console.log("    Confidential bridge event detected!");
                             await relayConfidentialToSolana(log.transactionHash!);
                         }
                     } catch {
-                        console.log("   ℹ️ Other event type");
+                        console.log("   Other event type");
                     }
                 }
 

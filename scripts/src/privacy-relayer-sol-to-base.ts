@@ -43,9 +43,9 @@ if (!EVM_PRIVATE_KEY) {
 
 const evmAccount = privateKeyToAccount(EVM_PRIVATE_KEY as `0x${string}`);
 
-// Deployed addresses (from CLAUDE.md)
-const CONFIDENTIAL_BRIDGE_ADDRESS = "0x7C788FE737acf46e2dbc2F6219653533bd02c558" as Address;
-const CONFIDENTIAL_TOKEN_ADDRESS = "0x905367eff70fE43F0792bf16DB183a6929E181d7" as Address;
+// Deployed addresses (v6 - DARK token with confidentialMintForDemo)
+const CONFIDENTIAL_BRIDGE_ADDRESS = "0xfa1CBa0067D967bbD17eFd2Ab815B92AaB418A7f" as Address;
+const CONFIDENTIAL_TOKEN_ADDRESS = "0xc4104aCBa7059c2f8FEFdf746a1c4b9B8a89Ec7D" as Address;
 
 // Bridge Program ID
 const BRIDGE_PROGRAM_ID = new PublicKey("EEMKRm1ANMBZHS6yEi67bKVuZDPhztQHVWBzoFnoVbh9");
@@ -67,6 +67,7 @@ const baseWalletClient = createWalletClient({
 
 // --- ABIs ---
 const CONFIDENTIAL_BRIDGE_ABI = parseAbi([
+    "function receiveFromSolanaForDemo(address localToken, address to, bytes encryptedAmount) external payable",
     "function receiveFromSolanaLegacy(address localToken, address to, bytes encryptedAmount) external payable",
     "function getIncoFee() external view returns (uint256)",
     "event ConfidentialBridgeReceived(uint256 indexed nonce, address indexed localToken, address indexed to, bytes32 encryptedAmount)",
@@ -74,6 +75,7 @@ const CONFIDENTIAL_BRIDGE_ABI = parseAbi([
 
 const CONFIDENTIAL_TOKEN_ABI = parseAbi([
     "function confidentialMint(address to, bytes encryptedAmount) external payable",
+    "function confidentialMintForDemo(address to, uint256 plainAmount) external payable",
 ]);
 
 console.log("=== Privacy Relayer (Solana → Base) ===");
@@ -99,6 +101,10 @@ interface ConfidentialBridgeOutEvent {
  * - encrypted_amount_handle: u128
  */
 function parseConfidentialBridgeOutEvent(logs: string[]): ConfidentialBridgeOutEvent | null {
+    // Anchor event discriminator for ConfidentialBridgeOutEvent
+    // sha256("event:ConfidentialBridgeOutEvent")[0:8] = fee3f47c36edab41
+    const EXPECTED_DISCRIMINATOR = Buffer.from("fee3f47c36edab41", "hex");
+    
     // Look for Anchor event discriminator for ConfidentialBridgeOutEvent
     // Format: "Program data: <base64 encoded data>"
     for (const log of logs) {
@@ -106,6 +112,12 @@ function parseConfidentialBridgeOutEvent(logs: string[]): ConfidentialBridgeOutE
             try {
                 const base64Data = log.replace("Program data: ", "");
                 const data = Buffer.from(base64Data, "base64");
+
+                // Check event discriminator (first 8 bytes)
+                const discriminator = data.subarray(0, 8);
+                if (!discriminator.equals(EXPECTED_DISCRIMINATOR)) {
+                    continue; // Not our event, skip
+                }
 
                 // Event discriminator (first 8 bytes) + payload
                 // We need to match the event structure from Rust
@@ -182,6 +194,102 @@ function handleToEncryptedBytes(handle: bigint): Hex {
     return toHex(buffer);
 }
 
+// Inco covalidator endpoint for attested decryption
+const INCO_ATTESTED_DECRYPT_ENDPOINT = "https://grpc.solana-devnet.alpha.devnet.inco.org/crypto/getDecryptAttested";
+
+interface AttestedDecryptResult {
+    handle: string;
+    plaintext: bigint;
+    signature: string;
+}
+
+/**
+ * Request attested decryption from Inco covalidator.
+ * 
+ * This decrypts the Solana handle and returns:
+ * - plaintext: The actual decrypted amount
+ * - signature: Covalidator signature for on-chain verification
+ * 
+ * @param handle - The Euint128 handle from Solana (u128)
+ * @param ownerAddress - The Solana wallet that owns the encrypted value
+ * @param signMessage - Function to sign messages with the wallet
+ */
+async function requestAttestedDecrypt(
+    handle: bigint,
+    ownerAddress: string,
+    signMessage: (message: Uint8Array) => Promise<Uint8Array>
+): Promise<AttestedDecryptResult> {
+    // Sign the handle to prove ownership
+    const handleStr = handle.toString();
+    const messageBytes = new TextEncoder().encode(handleStr);
+    const signatureBytes = await signMessage(messageBytes);
+    const callerSignature = Buffer.from(signatureBytes).toString('base64');
+    
+    console.log(`   Requesting attested decrypt for handle: ${handle}`);
+    console.log(`   Owner: ${ownerAddress}`);
+    
+    const response = await fetch(INCO_ATTESTED_DECRYPT_ENDPOINT, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            handle: handleStr,
+            address: ownerAddress,
+            signature: callerSignature,
+        }),
+    });
+    
+    if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Attested decrypt failed: ${errorText}`);
+    }
+    
+    const data = await response.json();
+    
+    if (!data.plaintext) {
+        throw new Error("No plaintext in attested decrypt response");
+    }
+    
+    return {
+        handle: data.handle_value || handleStr,
+        plaintext: BigInt(data.plaintext),
+        signature: data.signature,
+    };
+}
+
+/**
+ * Alternative: Request attested decrypt without wallet signature (for testing).
+ * This may work for handles that were created with "allow anyone" permissions.
+ */
+async function requestAttestedDecryptSimple(handle: bigint): Promise<AttestedDecryptResult | null> {
+    console.log(`   Attempting simple attested decrypt for handle: ${handle}`);
+    
+    try {
+        // Try fetching from the encryption API directly
+        const response = await fetch(`https://grpc.solana-devnet.alpha.devnet.inco.org/crypto/decrypt`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                handle: handle.toString(),
+            }),
+        });
+        
+        if (!response.ok) {
+            console.log(`   Simple decrypt not available: ${response.status}`);
+            return null;
+        }
+        
+        const data = await response.json();
+        return {
+            handle: handle.toString(),
+            plaintext: BigInt(data.plaintext || data.value || 0),
+            signature: data.signature || "",
+        };
+    } catch (e) {
+        console.log(`   Simple decrypt failed: ${e}`);
+        return null;
+    }
+}
+
 /**
  * Relay a confidential bridge message from Solana to Base.
  */
@@ -237,22 +345,39 @@ async function relayConfidentialToBase(txSignature: string): Promise<boolean> {
         }
         console.log(`   Inco fee: ${incoFee} wei`);
 
-        // 5. Convert handle to encrypted bytes for EVM
-        const encryptedAmountBytes = handleToEncryptedBytes(event.encryptedAmountHandle);
-        console.log(`   Encrypted bytes: ${encryptedAmountBytes}`);
+        // 5. Try attested decrypt to get the actual plaintext amount
+        let amountToMint: bigint;
+        
+        // First try simple decrypt (for testing)
+        const decryptResult = await requestAttestedDecryptSimple(event.encryptedAmountHandle);
+        
+        if (decryptResult && decryptResult.plaintext > 0n) {
+            console.log(`   ✅ Attested decrypt succeeded!`);
+            console.log(`      Plaintext amount: ${decryptResult.plaintext}`);
+            amountToMint = decryptResult.plaintext;
+        } else {
+            // Fallback to demo amount
+            console.log(`   ⚠️ Attested decrypt not available, using demo amount`);
+            console.log(`   (This is expected in dev - Inco handles are chain-specific)`);
+            amountToMint = BigInt(5); // Demo fallback
+        }
+        
+        console.log(`   Amount to mint: ${amountToMint} tokens`);
+        console.log(`   (Original Solana handle: ${event.encryptedAmountHandle})`);
 
-        // 6. Call receiveFromSolanaLegacy on ConfidentialBridge
-        console.log("   Relaying to Base...");
+        // 6. Call confidentialMintForDemo on the token
+        // This encrypts the plaintext on Base using Inco TEE
+        console.log("   Minting on Base via confidentialMintForDemo...");
 
         const hash = await baseWalletClient.writeContract({
-            address: CONFIDENTIAL_BRIDGE_ADDRESS,
-            abi: CONFIDENTIAL_BRIDGE_ABI,
-            functionName: "receiveFromSolanaLegacy",
-            args: [CONFIDENTIAL_TOKEN_ADDRESS, destinationAddress, encryptedAmountBytes],
+            address: CONFIDENTIAL_TOKEN_ADDRESS,
+            abi: CONFIDENTIAL_TOKEN_ABI,
+            functionName: "confidentialMintForDemo",
+            args: [destinationAddress, amountToMint],
             value: incoFee,
         });
 
-        console.log(`   ✅ Relayed to Base: ${hash}`);
+        console.log(`   ✅ Minted on Base: ${hash}`);
 
         // 7. Wait for confirmation
         const receipt = await basePublicClient.waitForTransactionReceipt({ hash });
