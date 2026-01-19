@@ -9,7 +9,7 @@ This is a bidirectional bridge between Base and Solana that enables:
 - Cross-chain token transfers (SOL, SPL tokens, ERC20s, ETH)
 - Arbitrary cross-chain message passing
 - Wrapped token deployment on both chains
-- **Privacy-preserving transfers via Inco Lightning FHE**
+- **Privacy-preserving transfers via Inco Lightning encrypted computation**
 
 The bridge consists of two main components:
 
@@ -111,8 +111,8 @@ bun run src/generate-test-ciphertexts.ts
 - **Twin.sol**: Execution contract for each Solana sender pubkey  
 - **CrossChainERC20.sol**: Mintable/burnable ERC20 for cross-chain transfers
 - **CrossChainERC20Factory.sol**: Factory for deploying wrapped tokens
-- **ConfidentialBridge.sol**: Privacy-preserving bridge using Inco Lightning FHE
-- **ConfidentialCrossChainERC20.sol**: FHE-enabled ERC20 with encrypted balances
+- **ConfidentialBridge.sol**: Privacy-preserving bridge using Inco Lightning encrypted computation
+- **ConfidentialCrossChainERC20.sol**: Confidential ERC20 with encrypted balances (euint256)
 
 ### Solana Side
 
@@ -120,7 +120,7 @@ bun run src/generate-test-ciphertexts.ts
 - **OutgoingMessage**: Messages sent from Solana to Base
 - **IncomingMessage**: Messages sent from Base to Solana
 - **Vaults**: Lock SPL tokens and native SOL during bridging
-- **ConfidentialVault**: FHE-enabled vault for private balances
+- **ConfidentialVault**: Encrypted vault for private balances (Euint128 handles)
 
 ### Bridge Flow
 
@@ -129,11 +129,11 @@ bun run src/generate-test-ciphertexts.ts
 
 ### Privacy Flow (Inco Lightning)
 
-1. User encrypts amount using `@inco/js` SDK
-2. Encrypted ciphertext passed to `bridgePrivateToSolana()`
-3. Bridge stores expected handle and nonce for verification
-4. On receive, handle is verified to prevent substitution attacks
-5. `receiveFromSolana(nonce, token, recipient, encryptedAmount)` mints to recipient
+1. User encrypts amount using `@inco/js` SDK (EVM) or `@inco/solana-sdk` (SVM)
+2. Encrypted ciphertext passed to bridge contract/program
+3. Bridge stores encrypted handle (reference to off-chain encrypted data)
+4. Operations (add, sub, compare) performed on encrypted values via CPI
+5. Handle verified on receive to prevent substitution attacks
 
 ### Bidirectional Bridge Client (Added in 6d71c93)
 
@@ -171,7 +171,7 @@ A unified client (`BidirectionalBridge`) manages operations across both chains:
 
 ### Fork Tests
 
-Fork tests run against Base Sepolia with real Inco Lightning infrastructure:
+Fork tests run against Base Sepolia with real Inco Lightning covalidator infrastructure:
 
 ```bash
 cd base
@@ -194,7 +194,7 @@ forge test --match-contract ConfidentialBridgeHandleVerificationTest --fork-url 
 
 ### Test Setup Requirements
 
-Tests using Inco FHE operations require:
+Tests using Inco encrypted operations require:
 
 1. **Contract funding** - Contracts need ETH to pay Inco fees
 2. **Real ciphertexts** - Mock ciphertexts will be rejected by Inco precompiles
@@ -264,7 +264,7 @@ When running fork tests with mock encrypted amounts:
 
 - `base/src/Bridge.sol` - Core Base bridge logic
 - `base/src/ConfidentialBridge.sol` - Privacy-preserving bridge
-- `base/src/ConfidentialCrossChainERC20.sol` - FHE-enabled ERC20
+- `base/src/ConfidentialCrossChainERC20.sol` - Inco encrypted ERC20
 - `solana/programs/bridge/src/lib.rs` - Solana program entry point  
 
 ### Deployment & Scripts
@@ -285,30 +285,217 @@ When running fork tests with mock encrypted amounts:
 
 ## Inco Lightning Integration
 
-### EVM (Base)
+Inco Lightning is a **confidentiality layer** for blockchains using TEE-based covalidators (not FHE). It provides encrypted data types where **handles** (bytes32/u128) reference encrypted values stored off-chain.
+
+### Key Concepts
+
+| Concept | Description |
+|---------|-------------|
+| **Handles** | Immutable references to encrypted values (bytes32 on EVM, u128 on SVM) |
+| **E-Types** | `euint256`, `ebool`, `eaddress` (EVM) / `Euint128`, `Ebool` (SVM) |
+| **Operations** | Arithmetic/comparison on encrypted values via contract calls or CPI |
+| **Access Control** | `allow()` grants decryption rights to specific addresses |
+| **Attestations** | Covalidator-signed proofs for decryption/computation results |
+
+### EVM (Base) - Solidity API
 
 ```solidity
-import {euint256, ebool, e, inco} from "@inco/lightning/Lib.sol";
+import {euint256, ebool, eaddress, e, inco} from "@inco/lightning/Lib.sol";
+using e for *;
 
-// Get Inco fee
-uint256 fee = inco.getFee();
+// ============== Input Functions ==============
 
-// Create encrypted value from ciphertext
-euint256 encrypted = e.newEuint256{value: fee}(ciphertext, msg.sender);
+// From ciphertext (client-encrypted) - requires fee
+euint256 encrypted = valueInput.newEuint256(msg.sender);
+ebool flag = flagInput.newEbool(msg.sender);
+eaddress addr = addrInput.newEaddress(msg.sender);
 
-// Arithmetic on encrypted values
-euint256 sum = e.add(a, b);
+// From plaintext (trivial encrypt)
+euint256 amount = uint256(1000).asEuint256();
+ebool isActive = true.asEbool();
 
-// Comparison
-ebool isGreater = e.ge(a, b);
+// ============== Math Operations ==============
 
-// Access control
-e.allow(handle, user);
+euint256 sum = a.add(b);      // Addition
+euint256 diff = a.sub(b);     // Subtraction
+euint256 prod = a.mul(b);     // Multiplication
+euint256 quot = a.div(b);     // Division
+euint256 remainder = a.rem(b); // Remainder
+
+// ============== Bitwise Operations ==============
+
+euint256 andResult = a.and(b);
+euint256 orResult = a.or(b);
+euint256 xorResult = a.xor(b);
+euint256 shifted = a.shr(bits);
+euint256 rotated = a.rotl(bits);
+
+// ============== Comparison Operations ==============
+
+ebool isEqual = a.eq(b);      // Equal
+ebool isGreater = a.gt(b);    // Greater than
+ebool isGe = a.ge(b);         // Greater or equal
+ebool isLess = a.lt(b);       // Less than
+ebool isLe = a.le(b);         // Less or equal
+euint256 minimum = a.min(b);  // Min value
+euint256 maximum = a.max(b);  // Max value
+
+// ============== Random Numbers ==============
+
+euint256 random = e.rand();
+euint256 bounded = e.randBounded(100);          // [0, 100)
+euint256 encBounded = e.randBounded(upperBound); // Encrypted bound
+
+// ============== Control Flow (Multiplexer Pattern) ==============
+
+// Use select() instead of if/else - never reveals condition
+euint256 result = condition.select(valueIfTrue, valueIfFalse);
+
+// Example: conditional transfer
+ebool hasBalance = balanceOf[msg.sender].ge(amount);
+euint256 transferred = hasBalance.select(amount, uint256(0).asEuint256());
+
+// ============== Access Control ==============
+
+// Grant decryption access (required after every operation!)
+newBalance.allow(msg.sender);  // Allow user to decrypt
+newBalance.allowThis();        // Allow contract to compute in future
+
+// Check if address can decrypt
+require(msg.sender.isAllowed(value), "Unauthorized");
+
+// ============== Fees ==============
+
+require(msg.value >= inco.getFee() * ciphertextCount, "Fee not paid");
 ```
 
-### SVM (Solana)
+### EVM Decryption Flows
 
-Uses CPI to Inco Lightning program for FHE operations. See `clients/ts/src/privacy-client.ts` for encryption examples.
+```solidity
+import {DecryptionAttestation} from "@inco/lightning/src/lightning-parts/DecryptionAttester.types.sol";
+
+// Verify attested decryption on-chain
+function verifyDecryption(
+    DecryptionAttestation memory decryption,
+    bytes[] memory signatures
+) external {
+    // 1. Verify covalidator signatures
+    require(
+        inco.incoVerifier().isValidDecryptionAttestation(decryption, signatures),
+        "Invalid signature"
+    );
+    
+    // 2. Verify handle matches expected value
+    require(euint256.unwrap(myHandle) == decryption.handle, "Handle mismatch");
+    
+    // 3. Use decrypted value
+    uint256 plaintext = uint256(decryption.value);
+}
+```
+
+### SVM (Solana) - Rust API
+
+```rust
+use anchor_lang::prelude::*;
+use inco_lightning::cpi::accounts::{Operation, Allow};
+use inco_lightning::cpi::{
+    e_add, e_sub, e_mul, e_ge, e_gt, e_le, e_lt, e_eq,
+    e_select, e_and, e_or, e_not, e_shl, e_shr, e_rand,
+    new_euint128, as_euint128, new_ebool, as_ebool, allow
+};
+use inco_lightning::types::{Euint128, Ebool};
+use inco_lightning::ID as INCO_LIGHTNING_ID;
+
+// ============== Input Functions ==============
+
+// From ciphertext (client-encrypted)
+let cpi_ctx = CpiContext::new(inco.clone(), Operation { signer: signer.clone() });
+let amount: Euint128 = new_euint128(cpi_ctx, encrypted_amount, 0)?;
+
+// From plaintext
+let cpi_ctx = CpiContext::new(inco.clone(), Operation { signer: signer.clone() });
+let zero: Euint128 = as_euint128(cpi_ctx, 0)?;
+
+// ============== Arithmetic Operations ==============
+
+let sum: Euint128 = e_add(cpi_ctx, a, b, 0)?;
+let diff: Euint128 = e_sub(cpi_ctx, a, b, 0)?;
+let prod: Euint128 = e_mul(cpi_ctx, a, b, 0)?;
+
+// ============== Comparison Operations ==============
+
+let is_ge: Ebool = e_ge(cpi_ctx, balance, amount, 0)?;
+let is_gt: Ebool = e_gt(cpi_ctx, a, b, 0)?;
+let is_eq: Ebool = e_eq(cpi_ctx, a, b, 0)?;
+
+// ============== Control Flow ==============
+
+// Conditional selection (if/else replacement)
+let actual: Euint128 = e_select(cpi_ctx, condition, if_true, if_false, 0)?;
+
+// ============== Access Control ==============
+
+// Grant decryption access via remaining_accounts
+let cpi_ctx = CpiContext::new(
+    inco.clone(),
+    Allow {
+        allowance_account: ctx.remaining_accounts[0].clone(),
+        signer: signer.clone(),
+        allowed_address: ctx.remaining_accounts[1].clone(),
+        system_program: ctx.accounts.system_program.to_account_info(),
+    },
+);
+allow(cpi_ctx, new_balance.0, true, owner)?;
+
+// ============== Random Numbers ==============
+
+let random: Euint128 = e_rand(cpi_ctx, 0)?;
+
+// ============== Bitwise Operations ==============
+
+let and_result: Euint128 = e_and(cpi_ctx, a, b, 0)?;
+let or_result: Euint128 = e_or(cpi_ctx, a, b, 0)?;
+let not_result: Euint128 = e_not(cpi_ctx, a, 0)?;
+```
+
+### TypeScript Client (Encryption)
+
+```typescript
+import { Lightning, supportedChains } from '@inco/js';
+
+// Initialize Inco
+const zap = await Lightning.latest('testnet', supportedChains.baseSepolia);
+
+// Encrypt value for EVM
+const ciphertext = await zap.encrypt(amount, {
+  accountAddress: userAddress,
+  dappAddress: contractAddress
+});
+
+// Attested decrypt (with covalidator signatures)
+const results = await zap.attestedDecrypt(walletClient, [handleHex]);
+const { handle, plaintext, covalidatorSignatures } = results[0];
+
+// Attested compute (off-chain computation)
+const result = await zap.attestedCompute(
+  walletClient,
+  handleHex,
+  AttestedComputeSupportedOps.Ge,
+  700n  // Compare: handle >= 700
+);
+
+// Attested reveal (for publicly revealed handles)
+const revealed = await zap.attestedReveal([handleHex]);
+```
+
+### Best Practices
+
+1. **Always call `allowThis()` after operations** - Otherwise contract can't use the value in future tx
+2. **Verify handle matches on attestation** - Prevents handle swap attacks
+3. **Check `isAllowed()` for external handle inputs** - Prevent unauthorized access
+4. **Use `select()` instead of if/else** - Never branch on encrypted conditions
+5. **Pay fees for ciphertext inputs** - `msg.value >= inco.getFee() * count`
+6. **Be careful with delegatecall** - Called contract can decrypt your handles
 
 ---
 
@@ -575,17 +762,18 @@ EVM_PRIVATE_KEY=0x... bun run src/auto-relayer-base-sol.ts <BASE_TX_HASH>
 
 ---
 
-## Privacy Bridge with Inco Lightning FHE
+## Privacy Bridge with Inco Lightning
 
-Dark Bridge includes a **complete privacy layer** using Inco Lightning for Fully Homomorphic Encryption (FHE), making it the **first bidirectional privacy bridge** between Base (EVM) and Solana (SVM).
+Dark Bridge includes a **complete privacy layer** using Inco Lightning for encrypted computation, making it the **first bidirectional privacy bridge** between Base (EVM) and Solana (SVM). Inco uses encrypted handles that reference values stored off-chain by covalidators, enabling arithmetic and comparison operations on encrypted data.
 
 ### Privacy Features
 
-- ✅ **Encrypted Amounts**: All transfer amounts encrypted using FHE
-- ✅ **Encrypted Balances**: Token balances stored as encrypted handles
-- ✅ **Cross-Chain Privacy**: Encryption preserved during bridging
-- ✅ **Operation Privacy**: Add, subtract, compare on encrypted data
+- ✅ **Encrypted Amounts**: All transfer amounts encrypted using Inco SDK
+- ✅ **Encrypted Balances**: Token balances stored as encrypted handles (euint256/Euint128)
+- ✅ **Cross-Chain Privacy**: Encryption preserved during bridging via handle conversion
+- ✅ **Encrypted Operations**: Add, subtract, compare on encrypted data via CPI
 - ✅ **Handle Verification**: Prevents swap attacks via nonce mapping
+- ✅ **Access Control**: `allow()` grants decryption permissions to specific addresses
 
 ### Quick Start: Privacy Bridge
 
@@ -607,20 +795,58 @@ EVM_PRIVATE_KEY=0x... bun run src/privacy-relayer-base-to-sol.ts --monitor
 **Contracts:**
 
 - `ConfidentialBridge.sol` - Privacy layer for cross-chain transfers
-- `ConfidentialCrossChainERC20.sol` - ERC20 with encrypted balances (`euint256`)
+- `ConfidentialCrossChainERC20.sol` - ERC20 with encrypted balances using `euint256` handles
+
+**Key Inco Operations (EVM):**
+
+```solidity
+import {euint256, ebool, e, inco} from "@inco/lightning/Lib.sol";
+
+// Create encrypted value from ciphertext
+euint256 encrypted = e.newEuint256{value: inco.getFee()}(ciphertext, msg.sender);
+
+// Arithmetic and comparison on encrypted values
+euint256 sum = e.add(a, b);
+ebool isGreater = e.ge(a, b);
+
+// Grant decryption access
+e.allow(handle, user);
+```
 
 **Deployed:**
 
-- ConfidentialBridge: `0x09ED10e70F46C9a45cE03Da0bC5Bdb9434d33D59`
-- ConfidentialToken: `0x9DE43656041A9Fce12f1Fb848CCB0D9DF44B5e20`
+- ConfidentialBridge: `0x7C788FE737acf46e2dbc2F6219653533bd02c558`
+- ConfidentialToken: `0x905367eff70fE43F0792bf16DB183a6929E181d7`
 
 #### SVM Side (Solana Devnet)
 
 **Program:**
 
 - `confidential` module with `ConfidentialVault` accounts
-- Encrypted balances using `Euint128` (16 bytes)
+- Encrypted balances using `Euint128` (u128 handle = 16 bytes)
 - CPI to Inco Lightning program (`5sjEbPiqgZrYwR31ahR6Uk9wf5awoX61YGg7jExQSwaj`)
+
+**Key Inco Operations (SVM):**
+
+```rust
+use inco_lightning::cpi::{e_add, e_sub, e_ge, e_select, new_euint128, as_euint128, allow};
+use inco_lightning::types::{Euint128, Ebool};
+
+// Create encrypted handle from ciphertext
+let amount: Euint128 = new_euint128(cpi_ctx, encrypted_amount, 0)?;
+
+// Arithmetic on encrypted values
+let new_balance: Euint128 = e_add(cpi_ctx, balance, amount, 0)?;
+
+// Comparison (returns encrypted boolean)
+let has_sufficient: Ebool = e_ge(cpi_ctx, balance, amount, 0)?;
+
+// Conditional selection without revealing condition
+let actual: Euint128 = e_select(cpi_ctx, has_sufficient, amount, zero, 0)?;
+
+// Grant decryption access via remaining_accounts
+allow(cpi_ctx, new_balance.0, true, owner)?;
+```
 
 **Deployed:**
 
@@ -748,7 +974,7 @@ this.baseZap = await Lightning.latest(config.incoEnvironment, chainId);
 
 #### Inco Fees Required
 
-FHE operations require Inco fees (~0.005 ETH per operation on testnet):
+Encrypted operations require Inco fees (~0.005 ETH per operation on testnet):
 
 ```bash
 # Check current fee

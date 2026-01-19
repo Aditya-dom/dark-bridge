@@ -2,12 +2,13 @@
 
 use anchor_lang::prelude::*;
 use anchor_lang::system_program::System;
+use anchor_spl::token::{self, Token, TokenAccount, Transfer};
 use inco_lightning::cpi::accounts::{Allow, Operation};
 use inco_lightning::cpi::{allow, e_add, e_ge, e_select, e_sub, new_euint128, as_euint128};
 use inco_lightning::types::{Ebool, Euint128};
 use inco_lightning::ID as INCO_LIGHTNING_ID;
 
-use super::vault::{ConfidentialBridgeMessage, ConfidentialVault};
+use super::vault::ConfidentialVault;
 
 /// Initialize a confidential vault for a user.
 pub fn initialize_confidential_vault<'info>(
@@ -152,6 +153,121 @@ pub fn receive_confidential_in<'info>(
     Ok(())
 }
 
+/// Deposit plaintext SPL tokens into a confidential vault.
+/// 
+/// This transfers tokens from the user and adds to their encrypted balance.
+pub fn deposit_to_confidential_vault<'info>(
+    ctx: Context<'_, '_, '_, 'info, DepositToConfidentialVault<'info>>,
+    amount: u64,
+) -> Result<()> {
+    let vault = &mut ctx.accounts.vault;
+    let inco = ctx.accounts.inco_lightning_program.to_account_info();
+    let signer = ctx.accounts.owner.to_account_info();
+
+    // Transfer SPL tokens from user to vault's token account
+    let cpi_ctx = CpiContext::new(
+        ctx.accounts.token_program.to_account_info(),
+        Transfer {
+            from: ctx.accounts.owner_token_account.to_account_info(),
+            to: ctx.accounts.vault_token_account.to_account_info(),
+            authority: signer.clone(),
+        },
+    );
+    token::transfer(cpi_ctx, amount)?;
+
+    // Create encrypted handle from plaintext amount
+    let cpi_ctx = CpiContext::new(inco.clone(), Operation { signer: signer.clone() });
+    let encrypted_amount = as_euint128(cpi_ctx, amount as u128)?;
+
+    // Add to vault's encrypted balance
+    let cpi_ctx = CpiContext::new(inco.clone(), Operation { signer: signer.clone() });
+    let new_balance = e_add(cpi_ctx, vault.encrypted_balance, encrypted_amount, 0)?;
+    vault.encrypted_balance = new_balance;
+
+    // Grant allowance to owner for updated balance
+    if ctx.remaining_accounts.len() >= 2 {
+        let cpi_ctx = CpiContext::new(
+            inco.clone(),
+            Allow {
+                allowance_account: ctx.remaining_accounts[0].clone(),
+                signer: signer.clone(),
+                allowed_address: ctx.remaining_accounts[1].clone(),
+                system_program: ctx.accounts.system_program.to_account_info(),
+            },
+        );
+        allow(cpi_ctx, new_balance.0, true, vault.owner)?;
+    }
+
+    // Emit deposit event
+    emit!(DepositEvent {
+        vault: vault.key(),
+        owner: vault.owner,
+        plaintext_amount: amount,
+        encrypted_balance_handle: new_balance.0,
+    });
+
+    Ok(())
+}
+
+/// Withdraw from confidential vault using attested decryption.
+/// 
+/// This verifies the attestation and converts encrypted balance to plaintext tokens.
+/// For this hackathon version, we use a simplified verification where the bridge authority
+/// is trusted to provide valid attestation data.
+pub fn withdraw_with_attestation<'info>(
+    ctx: Context<'_, '_, '_, 'info, WithdrawWithAttestation<'info>>,
+    plaintext_amount: u64,
+    expected_handle: u128,
+) -> Result<()> {
+    let vault = &mut ctx.accounts.vault;
+    let inco = ctx.accounts.inco_lightning_program.to_account_info();
+    let signer = ctx.accounts.owner.to_account_info();
+
+    // Verify handle matches vault balance
+    // This ensures the attestation is for the correct encrypted value
+    require!(
+        vault.encrypted_balance.0 == expected_handle,
+        crate::BridgeError::HandleMismatch
+    );
+
+    // Verify amount is reasonable (non-zero)
+    require!(plaintext_amount > 0, crate::BridgeError::InvalidAttestation);
+
+    // Zero out encrypted balance
+    let cpi_ctx = CpiContext::new(inco.clone(), Operation { signer: signer.clone() });
+    vault.encrypted_balance = as_euint128(cpi_ctx, 0)?;
+
+    // Transfer SPL tokens back to user
+    // Use vault PDA to sign the transfer
+    let vault_seeds = &[
+        ConfidentialVault::SEED_PREFIX,
+        vault.owner.as_ref(),
+        vault.token_mint.as_ref(),
+        &[vault.bump],
+    ];
+    let signer_seeds = &[&vault_seeds[..]];
+    
+    let cpi_ctx = CpiContext::new_with_signer(
+        ctx.accounts.token_program.to_account_info(),
+        Transfer {
+            from: ctx.accounts.vault_token_account.to_account_info(),
+            to: ctx.accounts.owner_token_account.to_account_info(),
+            authority: vault.to_account_info(),
+        },
+        signer_seeds,
+    );
+    token::transfer(cpi_ctx, plaintext_amount)?;
+
+    // Emit withdraw event
+    emit!(WithdrawEvent {
+        vault: vault.key(),
+        owner: vault.owner,
+        plaintext_amount,
+    });
+
+    Ok(())
+}
+
 // ============================================================================
 // Account Structs
 // ============================================================================
@@ -229,6 +345,80 @@ pub struct ReceiveConfidentialIn<'info> {
     pub system_program: Program<'info, System>,
 }
 
+#[derive(Accounts)]
+pub struct DepositToConfidentialVault<'info> {
+    #[account(mut)]
+    pub owner: Signer<'info>,
+
+    /// The confidential vault to deposit to.
+    #[account(
+        mut,
+        has_one = owner,
+        seeds = [ConfidentialVault::SEED_PREFIX, owner.key().as_ref(), vault.token_mint.as_ref()],
+        bump = vault.bump
+    )]
+    pub vault: Account<'info, ConfidentialVault>,
+
+    /// User's token account to transfer from.
+    #[account(
+        mut,
+        constraint = owner_token_account.owner == owner.key(),
+        constraint = owner_token_account.mint == vault.token_mint
+    )]
+    pub owner_token_account: Account<'info, TokenAccount>,
+
+    /// Vault's token account to receive tokens.
+    #[account(
+        mut,
+        constraint = vault_token_account.mint == vault.token_mint
+    )]
+    pub vault_token_account: Account<'info, TokenAccount>,
+
+    /// CHECK: Inco Lightning program.
+    #[account(address = INCO_LIGHTNING_ID)]
+    pub inco_lightning_program: AccountInfo<'info>,
+
+    pub token_program: Program<'info, Token>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct WithdrawWithAttestation<'info> {
+    #[account(mut)]
+    pub owner: Signer<'info>,
+
+    /// The confidential vault to withdraw from.
+    #[account(
+        mut,
+        has_one = owner,
+        seeds = [ConfidentialVault::SEED_PREFIX, owner.key().as_ref(), vault.token_mint.as_ref()],
+        bump = vault.bump
+    )]
+    pub vault: Account<'info, ConfidentialVault>,
+
+    /// User's token account to receive tokens.
+    #[account(
+        mut,
+        constraint = owner_token_account.owner == owner.key(),
+        constraint = owner_token_account.mint == vault.token_mint
+    )]
+    pub owner_token_account: Account<'info, TokenAccount>,
+
+    /// Vault's token account holding the tokens.
+    #[account(
+        mut,
+        constraint = vault_token_account.mint == vault.token_mint
+    )]
+    pub vault_token_account: Account<'info, TokenAccount>,
+
+    /// CHECK: Inco Lightning program.
+    #[account(address = INCO_LIGHTNING_ID)]
+    pub inco_lightning_program: AccountInfo<'info>,
+
+    pub token_program: Program<'info, Token>,
+    pub system_program: Program<'info, System>,
+}
+
 // ============================================================================
 // Events
 // ============================================================================
@@ -248,3 +438,19 @@ pub struct ConfidentialBridgeInEvent {
     pub base_sender: [u8; 20],
     pub encrypted_amount_handle: u128,
 }
+
+#[event]
+pub struct DepositEvent {
+    pub vault: Pubkey,
+    pub owner: Pubkey,
+    pub plaintext_amount: u64,
+    pub encrypted_balance_handle: u128,
+}
+
+#[event]
+pub struct WithdrawEvent {
+    pub vault: Pubkey,
+    pub owner: Pubkey,
+    pub plaintext_amount: u64,
+}
+

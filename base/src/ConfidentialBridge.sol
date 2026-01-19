@@ -3,6 +3,8 @@ pragma solidity ^0.8.28;
 
 import {euint256, ebool, e, inco} from "@inco/lightning/Lib.sol";
 import {ReentrancyGuardTransient} from "solady/utils/ReentrancyGuardTransient.sol";
+import {OwnableRoles} from "solady/auth/OwnableRoles.sol";
+import {Initializable} from "solady/utils/Initializable.sol";
 
 import {ConfidentialCrossChainERC20} from "./ConfidentialCrossChainERC20.sol";
 import {Pubkey} from "./libraries/SVMLib.sol";
@@ -11,7 +13,7 @@ import {Ix} from "./libraries/SVMBridgeLib.sol";
 /// @title ConfidentialBridge
 /// @notice Privacy extension for the Base-Solana bridge using Inco Lightning.
 /// @dev Handles confidential token transfers with encrypted amounts on both chains.
-contract ConfidentialBridge is ReentrancyGuardTransient {
+contract ConfidentialBridge is ReentrancyGuardTransient, OwnableRoles, Initializable {
     using e for *;
 
     //////////////////////////////////////////////////////////////
@@ -23,6 +25,9 @@ contract ConfidentialBridge is ReentrancyGuardTransient {
 
     /// @notice The confidential token factory address.
     address public immutable CONFIDENTIAL_TOKEN_FACTORY;
+
+    /// @notice Guardian role for token registration and pause.
+    uint256 public constant GUARDIAN_ROLE = 1 << 0;
 
     //////////////////////////////////////////////////////////////
     ///                       Storage                          ///
@@ -37,6 +42,9 @@ contract ConfidentialBridge is ReentrancyGuardTransient {
     /// @notice Mapping of nonce to expected encrypted amount handle for verification.
     /// @dev Used to prevent handle swapping attacks during cross-chain transfers.
     mapping(uint256 => bytes32) public expectedHandles;
+
+    /// @notice Whether the bridge is paused.
+    bool public paused;
 
     //////////////////////////////////////////////////////////////
     ///                       Events                           ///
@@ -66,9 +74,17 @@ contract ConfidentialBridge is ReentrancyGuardTransient {
     error InsufficientFees();
     error ZeroAddress();
     error TokenNotRegistered();
-    error Unauthorized();
+    error SenderNotBridge();
     error HandleMismatch();
     error InvalidNonce();
+    error Paused();
+
+    //////////////////////////////////////////////////////////////
+    ///                       Events                           ///
+    //////////////////////////////////////////////////////////////
+
+    /// @notice Emitted when pause state changes.
+    event PauseStateChanged(bool paused);
 
     //////////////////////////////////////////////////////////////
     ///                       Modifiers                        ///
@@ -80,7 +96,12 @@ contract ConfidentialBridge is ReentrancyGuardTransient {
     }
 
     modifier onlyBridge() {
-        if (msg.sender != BRIDGE) revert Unauthorized();
+        if (msg.sender != BRIDGE) revert SenderNotBridge();
+        _;
+    }
+
+    modifier whenNotPaused() {
+        if (paused) revert Paused();
         _;
     }
 
@@ -91,12 +112,27 @@ contract ConfidentialBridge is ReentrancyGuardTransient {
     /// @notice Constructs the ConfidentialBridge.
     /// @param bridge_ The main bridge contract address.
     /// @param confidentialTokenFactory_ The confidential token factory address.
-    constructor(address bridge_, address confidentialTokenFactory_) {
+    /// @param owner_ The owner of the bridge (also gets guardian role).
+    constructor(address bridge_, address confidentialTokenFactory_, address owner_) {
         require(bridge_ != address(0), ZeroAddress());
         require(confidentialTokenFactory_ != address(0), ZeroAddress());
+        require(owner_ != address(0), ZeroAddress());
         
         BRIDGE = bridge_;
         CONFIDENTIAL_TOKEN_FACTORY = confidentialTokenFactory_;
+
+        // Initialize owner directly (not using proxy pattern for hackathon)
+        _initializeOwner(owner_);
+        _grantRoles(owner_, GUARDIAN_ROLE);
+    }
+
+    /// @notice Add additional guardians (owner only, for future use).
+    /// @param guardians The addresses to grant guardian role.
+    function addGuardians(address[] calldata guardians) external onlyOwner {
+        for (uint256 i = 0; i < guardians.length; i++) {
+            require(guardians[i] != address(0), ZeroAddress());
+            _grantRoles(guardians[i], GUARDIAN_ROLE);
+        }
     }
 
     //////////////////////////////////////////////////////////////
@@ -112,7 +148,7 @@ contract ConfidentialBridge is ReentrancyGuardTransient {
         address localToken,
         bytes32 toSolana,
         bytes calldata encryptedAmount
-    ) external payable nonReentrant requiresFee {
+    ) external payable nonReentrant whenNotPaused requiresFee {
         require(localToken != address(0), ZeroAddress());
         require(toSolana != bytes32(0), ZeroAddress());
 
@@ -154,7 +190,7 @@ contract ConfidentialBridge is ReentrancyGuardTransient {
         bytes32 toSolana,
         bytes calldata encryptedAmount,
         Ix[] calldata ixs
-    ) external payable nonReentrant requiresFee {
+    ) external payable nonReentrant whenNotPaused requiresFee {
         // Same logic as bridgePrivateToSolana but includes instructions
         require(localToken != address(0), ZeroAddress());
         require(toSolana != bytes32(0), ZeroAddress());
@@ -270,12 +306,33 @@ contract ConfidentialBridge is ReentrancyGuardTransient {
     //////////////////////////////////////////////////////////////
 
     /// @notice Register a confidential token mapping.
-    /// @dev Should be called by the factory or admin.
+    /// @dev Only guardians can register tokens.
     function registerConfidentialToken(
         address originalToken,
         address confidentialToken
-    ) external {
-        // TODO: Add access control
+    ) external onlyRoles(GUARDIAN_ROLE) {
+        require(originalToken != address(0), ZeroAddress());
+        require(confidentialToken != address(0), ZeroAddress());
         confidentialTokens[originalToken] = confidentialToken;
+    }
+
+    /// @notice Pause or unpause the bridge.
+    /// @dev Only guardians can pause.
+    function setPaused(bool _paused) external onlyRoles(GUARDIAN_ROLE) {
+        paused = _paused;
+        emit PauseStateChanged(_paused);
+    }
+
+    /// @notice Grant guardian role to an address.
+    /// @dev Only owner can grant roles.
+    function grantGuardian(address guardian) external onlyOwner {
+        require(guardian != address(0), ZeroAddress());
+        _grantRoles(guardian, GUARDIAN_ROLE);
+    }
+
+    /// @notice Revoke guardian role from an address.
+    /// @dev Only owner can revoke roles.
+    function revokeGuardian(address guardian) external onlyOwner {
+        _removeRoles(guardian, GUARDIAN_ROLE);
     }
 }

@@ -146,4 +146,11 @@ pub enum BridgeError {
 
     #[msg("Zero address")]
     ZeroAddress,
+
+    // Confidential Bridge Errors (7000-7099)
+    #[msg("Invalid attestation signature")]
+    InvalidAttestation = 7000,
+
+    #[msg("Handle does not match vault balance")]
+    HandleMismatch,
 }

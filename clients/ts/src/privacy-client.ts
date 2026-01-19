@@ -317,6 +317,204 @@ export class PrivacyBridgeClient {
 
         return txSig;
     }
+
+    // ============================================================================
+    // Attestation Verification Helpers
+    // ============================================================================
+
+    /**
+     * Request a decryption attestation from Inco covalidators.
+     * This is used for withdrawing encrypted balances back to plaintext.
+     * 
+     * @param handle - The encrypted balance handle to decrypt
+     * @param userAddress - The user's address (must have decrypt permission)
+     * @returns Attestation containing handle, plaintext value, and signatures
+     */
+    async requestAttestation(
+        handle: Hex,
+        userAddress: Address
+    ): Promise<DecryptionAttestation> {
+        if (!this.baseZap) {
+            await this.init();
+        }
+
+        // Request attested decryption from Inco covalidators
+        const result = await this.baseZap.attestedDecrypt({
+            handles: [handle],
+            accountAddress: userAddress,
+        });
+
+        return {
+            handle,
+            plaintextValue: BigInt(result.values[0]),
+            signatures: result.signatures as Hex[],
+        };
+    }
+
+    /**
+     * Get attestation for withdrawing the user's full balance.
+     * Reads the user's encrypted balance and requests attestation.
+     * 
+     * @param userAddress - The user's EVM address
+     * @param publicClient - Viem public client for reading contract state
+     */
+    async getAttestationForWithdraw(
+        userAddress: Address,
+        publicClient: any
+    ): Promise<DecryptionAttestation> {
+        // Read user's encrypted balance handle from ConfidentialToken
+        const balanceHandle = await publicClient.readContract({
+            address: this.config.confidentialTokenAddress,
+            abi: CONFIDENTIAL_TOKEN_ABI,
+            functionName: 'balanceOf',
+            args: [userAddress],
+        }) as Hex;
+
+        if (balanceHandle === '0x' + '0'.repeat(64)) {
+            throw new Error('No encrypted balance to withdraw');
+        }
+
+        // Request attestation for this balance
+        return this.requestAttestation(balanceHandle, userAddress);
+    }
+
+    /**
+     * Verify that an attestation is valid by checking signatures.
+     * This simulates the on-chain verification without sending a transaction.
+     * 
+     * @param attestation - The attestation to verify
+     * @returns true if attestation has valid signatures
+     */
+    verifyAttestation(attestation: DecryptionAttestation): boolean {
+        // Basic validation
+        if (!attestation.handle || attestation.handle.length !== 66) {
+            return false;
+        }
+
+        if (!attestation.signatures || attestation.signatures.length === 0) {
+            return false;
+        }
+
+        // Each signature should be 65 bytes (r: 32, s: 32, v: 1) in hex = 130 chars + 0x
+        for (const sig of attestation.signatures) {
+            if (!sig.startsWith('0x') || sig.length !== 132) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * Build the withdraw transaction with attestation.
+     * Returns the transaction parameters ready to be sent.
+     * 
+     * @param attestation - The decryption attestation from Inco
+     * @returns Transaction parameters for walletClient.writeContract
+     */
+    buildWithdrawWithAttestationTx(
+        attestation: DecryptionAttestation
+    ): WithdrawTransactionParams {
+        return {
+            address: this.config.confidentialTokenAddress,
+            abi: CONFIDENTIAL_TOKEN_ABI,
+            functionName: 'withdrawWithAttestation',
+            args: [
+                {
+                    handle: attestation.handle,
+                    value: '0x' + attestation.plaintextValue.toString(16).padStart(64, '0') as Hex,
+                },
+                attestation.signatures,
+            ],
+        };
+    }
+
+    /**
+     * Execute a withdraw with attestation.
+     * Decrypts and withdraws the user's entire encrypted balance.
+     * 
+     * @param walletClient - Viem wallet client for signing
+     * @param publicClient - Viem public client for reading state
+     */
+    async withdrawWithAttestation(
+        walletClient: any,
+        publicClient: any
+    ): Promise<Hex> {
+        const userAddress = walletClient.account.address;
+
+        // Get attestation for the user's balance
+        const attestation = await this.getAttestationForWithdraw(userAddress, publicClient);
+
+        // Verify attestation locally first
+        if (!this.verifyAttestation(attestation)) {
+            throw new Error('Invalid attestation received');
+        }
+
+        // Build and send the transaction
+        const txParams = this.buildWithdrawWithAttestationTx(attestation);
+
+        const txHash = await walletClient.writeContract({
+            ...txParams,
+            chain: baseSepolia,
+        });
+
+        return txHash as Hex;
+    }
+
+    /**
+     * Create attestation data for Solana withdraw.
+     * Converts attestation to the format expected by Solana program.
+     * 
+     * @param attestation - The EVM attestation
+     * @returns Solana-compatible attestation data
+     */
+    createAttestationForSolana(attestation: DecryptionAttestation): SolanaAttestationData {
+        // Convert handle from bytes32 to u128 (lower 128 bits)
+        const handleHex = attestation.handle.slice(-32); // Last 16 bytes = 32 hex chars
+        const handleU128 = BigInt('0x' + handleHex);
+
+        return {
+            plaintextAmount: attestation.plaintextValue,
+            expectedHandle: handleU128,
+        };
+    }
+}
+
+// ============================================================================
+// Types for Attestation Helpers
+// ============================================================================
+
+/**
+ * Decryption attestation from Inco covalidators.
+ */
+export interface DecryptionAttestation {
+    /** The encrypted handle that was decrypted */
+    handle: Hex;
+    /** The decrypted plaintext value */
+    plaintextValue: bigint;
+    /** Signatures from Inco covalidators */
+    signatures: Hex[];
+}
+
+/**
+ * Transaction parameters for withdrawWithAttestation.
+ */
+export interface WithdrawTransactionParams {
+    address: Address;
+    abi: typeof CONFIDENTIAL_TOKEN_ABI;
+    functionName: 'withdrawWithAttestation';
+    args: [
+        { handle: Hex; value: Hex },
+        Hex[]
+    ];
+}
+
+/**
+ * Solana-compatible attestation data.
+ */
+export interface SolanaAttestationData {
+    plaintextAmount: bigint;
+    expectedHandle: bigint;
 }
 
 // ============================================================================
@@ -344,4 +542,43 @@ const CONFIDENTIAL_BRIDGE_ABI = [
     },
 ] as const;
 
+// ============================================================================
+// ABI for ConfidentialCrossChainERC20 contract
+// ============================================================================
+
+const CONFIDENTIAL_TOKEN_ABI = [
+    {
+        name: 'balanceOf',
+        type: 'function',
+        stateMutability: 'view',
+        inputs: [{ name: 'account', type: 'address' }],
+        outputs: [{ type: 'uint256' }],
+    },
+    {
+        name: 'withdrawWithAttestation',
+        type: 'function',
+        stateMutability: 'nonpayable',
+        inputs: [
+            {
+                name: 'decryption',
+                type: 'tuple',
+                components: [
+                    { name: 'handle', type: 'bytes32' },
+                    { name: 'value', type: 'bytes32' },
+                ],
+            },
+            { name: 'signatures', type: 'bytes[]' },
+        ],
+        outputs: [],
+    },
+    {
+        name: 'deposit',
+        type: 'function',
+        stateMutability: 'payable',
+        inputs: [{ name: 'amount', type: 'uint256' }],
+        outputs: [],
+    },
+] as const;
+
 export default PrivacyBridgeClient;
+

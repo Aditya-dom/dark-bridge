@@ -33,6 +33,7 @@
     "author": "",
     "license": "ISC",
     "dependencies": {
+        "@inco/js": "^0.8.0-devnet-2",
         "@solana/web3.js": "^1.98.4"
     }
 }

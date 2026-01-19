@@ -11,6 +11,9 @@ import {ConfidentialBridge} from "../src/ConfidentialBridge.sol";
 contract DeployConfidential is Script {
     // Deployed bridge address on Base Sepolia
     address constant EXISTING_BRIDGE = 0x5CF8A12B48a221aCeD811602d0F0752CBe110fBe;
+    
+    // CrossChainERC20Factory address
+    address constant FACTORY = 0xEeEBDDa1bfE1C0aF25A56A3beb73e495dbaE7DEB;
 
     function run() external {
         uint256 deployerPrivateKey = vm.envUint("PRIVATE_KEY");
@@ -21,17 +24,17 @@ contract DeployConfidential is Script {
 
         vm.startBroadcast(deployerPrivateKey);
 
-        // Deploy Confidential Token Implementation (for beacon proxy pattern)
+        // Deploy Confidential Token Implementation
         ConfidentialCrossChainERC20 tokenImpl = new ConfidentialCrossChainERC20(
             EXISTING_BRIDGE
         );
         console2.log("ConfidentialCrossChainERC20 impl:", address(tokenImpl));
 
-        // Deploy Confidential Bridge
-        // Points to the deployed CrossChainERC20Factory
+        // Deploy Confidential Bridge with owner
         ConfidentialBridge confidentialBridge = new ConfidentialBridge(
             EXISTING_BRIDGE,
-            0xEeEBDDa1bfE1C0aF25A56A3beb73e495dbaE7DEB // CrossChainERC20Factory
+            FACTORY,
+            deployer // owner (also gets guardian role)
         );
         console2.log("ConfidentialBridge:", address(confidentialBridge));
 
@@ -40,5 +43,6 @@ contract DeployConfidential is Script {
         console2.log("\n=== Deployment Complete ===");
         console2.log("Token Implementation:", address(tokenImpl));
         console2.log("Confidential Bridge:", address(confidentialBridge));
+        console2.log("Owner & Guardian:", deployer);
     }
 }

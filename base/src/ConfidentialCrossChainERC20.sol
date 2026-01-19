@@ -3,6 +3,8 @@ pragma solidity ^0.8.28;
 
 import {euint256, ebool, e, inco} from "@inco/lightning/Lib.sol";
 import {Initializable} from "solady/utils/Initializable.sol";
+import {IERC20} from "forge-std/interfaces/IERC20.sol";
+import {DecryptionAttestation} from "@inco/lightning/lightning-parts/DecryptionAttester.types.sol";
 
 /// @title ConfidentialCrossChainERC20
 /// @notice A cross-chain ERC20 token with encrypted balances using Inco Lightning.
@@ -43,6 +45,9 @@ contract ConfidentialCrossChainERC20 is Initializable {
     /// @notice Encrypted allowances.
     mapping(address => mapping(address => euint256)) internal _allowances;
 
+    /// @notice The underlying ERC20 token (for deposit/withdraw).
+    address private _underlyingToken;
+
     //////////////////////////////////////////////////////////////
     ///                       Events                           ///
     //////////////////////////////////////////////////////////////
@@ -59,6 +64,12 @@ contract ConfidentialCrossChainERC20 is Initializable {
     /// @notice Emitted on encrypted burn.
     event ConfidentialBurn(address indexed from, euint256 amount);
 
+    /// @notice Emitted when plaintext tokens are deposited and encrypted.
+    event Deposit(address indexed from, uint256 plaintextAmount, euint256 encryptedAmount);
+
+    /// @notice Emitted when encrypted tokens are withdrawn using attestation.
+    event Withdraw(address indexed to, uint256 plaintextAmount);
+
     //////////////////////////////////////////////////////////////
     ///                       Errors                           ///
     //////////////////////////////////////////////////////////////
@@ -71,6 +82,15 @@ contract ConfidentialCrossChainERC20 is Initializable {
 
     /// @notice Thrown when a zero address is provided.
     error ZeroAddress();
+
+    /// @notice Thrown when attestation signature is invalid.
+    error InvalidAttestation();
+
+    /// @notice Thrown when handle in attestation doesn't match balance.
+    error HandleMismatch();
+
+    /// @notice Thrown when no underlying token is set.
+    error NoUnderlyingToken();
 
     //////////////////////////////////////////////////////////////
     ///                       Modifiers                        ///
@@ -286,6 +306,99 @@ contract ConfidentialCrossChainERC20 is Initializable {
     /// @dev Only the bridge can call this to read amounts for cross-chain messaging.
     function revealBalanceForBridge(address owner) external view onlyBridge returns (euint256) {
         return _balances[owner];
+    }
+
+    //////////////////////////////////////////////////////////////
+    ///                   Deposit / Withdraw Functions          ///
+    //////////////////////////////////////////////////////////////
+
+    /// @notice Deposit plaintext ERC20 tokens and receive encrypted balance.
+    /// @dev Transfers underlying tokens from sender and mints equivalent encrypted balance.
+    /// @param amount The plaintext amount to deposit.
+    function deposit(uint256 amount) external payable requiresFee {
+        if (_underlyingToken == address(0)) revert NoUnderlyingToken();
+        require(amount > 0, ZeroAddress());
+
+        // Transfer underlying tokens from sender to this contract
+        IERC20(_underlyingToken).transferFrom(msg.sender, address(this), amount);
+
+        // Create encrypted handle from plaintext amount (trivial encrypt)
+        euint256 encrypted = e.asEuint256(amount);
+
+        // Add to sender's encrypted balance
+        if (euint256.unwrap(_balances[msg.sender]) == bytes32(0)) {
+            _balances[msg.sender] = encrypted;
+        } else {
+            _balances[msg.sender] = e.add(_balances[msg.sender], encrypted);
+        }
+        e.allow(_balances[msg.sender], address(this));
+        e.allow(_balances[msg.sender], msg.sender);
+
+        // Update total supply
+        totalSupply = e.add(totalSupply, encrypted);
+        e.reveal(totalSupply);
+
+        emit Deposit(msg.sender, amount, encrypted);
+    }
+
+    /// @notice Withdraw encrypted balance to plaintext ERC20 using attested decryption.
+    /// @dev Verifies covalidator signatures and transfers underlying tokens.
+    /// @param decryption The decryption attestation containing handle and plaintext value.
+    /// @param signatures The covalidator signatures over the attestation.
+    function withdrawWithAttestation(
+        DecryptionAttestation memory decryption,
+        bytes[] memory signatures
+    ) external {
+        if (_underlyingToken == address(0)) revert NoUnderlyingToken();
+
+        // 1. Verify covalidator signatures
+        if (!inco.incoVerifier().isValidDecryptionAttestation(decryption, signatures)) {
+            revert InvalidAttestation();
+        }
+
+        // 2. Verify handle matches sender's balance
+        if (euint256.unwrap(_balances[msg.sender]) != decryption.handle) {
+            revert HandleMismatch();
+        }
+
+        // 3. Extract plaintext amount from attestation
+        uint256 amount = uint256(decryption.value);
+        require(amount > 0, ZeroAddress());
+
+        // 4. Zero out encrypted balance (user is withdrawing everything)
+        _balances[msg.sender] = e.asEuint256(0);
+        e.allow(_balances[msg.sender], address(this));
+        e.allow(_balances[msg.sender], msg.sender);
+
+        // 5. Update total supply
+        totalSupply = e.sub(totalSupply, e.asEuint256(amount));
+        e.reveal(totalSupply);
+
+        // 6. Transfer underlying tokens to sender
+        IERC20(_underlyingToken).transfer(msg.sender, amount);
+
+        emit Withdraw(msg.sender, amount);
+    }
+
+    /// @notice Get the underlying ERC20 token address.
+    function underlyingToken() external view returns (address) {
+        return _underlyingToken;
+    }
+
+    /// @notice Set the underlying ERC20 token address (bridge only).
+    /// @dev Can only be set once.
+    function setUnderlyingToken(address token) external onlyBridge {
+        require(_underlyingToken == address(0), "Already set");
+        require(token != address(0), ZeroAddress());
+        _underlyingToken = token;
+    }
+
+    /// @notice Initialize underlying token (callable by anyone if not set).
+    /// @dev For hackathon demo - allows token setup without bridge interaction.
+    function initUnderlyingTokenForDemo(address token) external {
+        require(_underlyingToken == address(0), "Already set");
+        require(token != address(0), ZeroAddress());
+        _underlyingToken = token;
     }
 
     //////////////////////////////////////////////////////////////

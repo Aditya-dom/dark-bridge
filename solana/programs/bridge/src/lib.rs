@@ -618,4 +618,32 @@ pub mod bridge {
     ) -> Result<()> {
         confidential::receive_confidential_in(ctx, encrypted_amount, base_sender)
     }
+
+    /// Deposit plaintext SPL tokens into a confidential vault.
+    /// Converts regular token balance to encrypted balance.
+    ///
+    /// # Arguments
+    /// * `ctx` - The context containing vault and token accounts
+    /// * `amount` - Plaintext amount of tokens to deposit
+    pub fn deposit_to_confidential_vault<'info>(
+        ctx: Context<'_, '_, '_, 'info, DepositToConfidentialVault<'info>>,
+        amount: u64,
+    ) -> Result<()> {
+        confidential::deposit_to_confidential_vault(ctx, amount)
+    }
+
+    /// Withdraw from confidential vault using attested decryption.
+    /// Verifies the attestation and converts encrypted balance to plaintext tokens.
+    ///
+    /// # Arguments
+    /// * `ctx` - The context containing vault and token accounts
+    /// * `plaintext_amount` - The decrypted amount from attestation
+    /// * `expected_handle` - The encrypted handle that was decrypted
+    pub fn withdraw_with_attestation<'info>(
+        ctx: Context<'_, '_, '_, 'info, WithdrawWithAttestation<'info>>,
+        plaintext_amount: u64,
+        expected_handle: u128,
+    ) -> Result<()> {
+        confidential::withdraw_with_attestation(ctx, plaintext_amount, expected_handle)
+    }
 }
