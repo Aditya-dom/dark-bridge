@@ -153,4 +153,7 @@ pub enum BridgeError {
 
     #[msg("Handle does not match vault balance")]
     HandleMismatch,
+
+    #[msg("Missing allowance accounts for grant_handle_access")]
+    MissingAllowanceAccounts,
 }

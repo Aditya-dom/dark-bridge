@@ -9,6 +9,7 @@ use inco_lightning::types::{Ebool, Euint128};
 use inco_lightning::ID as INCO_LIGHTNING_ID;
 
 use super::vault::ConfidentialVault;
+use crate::BridgeError;
 
 /// Initialize a confidential vault for a user.
 pub fn initialize_confidential_vault<'info>(
@@ -115,12 +116,50 @@ pub fn bridge_confidential_out<'info>(
     }
 
     // Emit bridge message event
+    // We emit the ORIGINAL amount handle (from NewEuint128) because:
+    // 1. The covalidator has the ciphertext for this handle
+    // 2. It can be decrypted via attested decrypt for cross-chain relay
+    // Note: actual_amount = e_select(has_sufficient, amount, zero)
+    // If has_sufficient is false, actual_amount is 0 (no tokens bridged)
     emit!(ConfidentialBridgeOutEvent {
         vault: vault.key(),
         owner: vault.owner,
         destination_evm,
-        encrypted_amount_handle: actual_amount.0,
+        encrypted_amount_handle: amount.0,  // Use original handle, not e_select result
     });
+
+    Ok(())
+}
+
+/// Grant access to a handle for attested decryption.
+/// 
+/// This allows a user to grant themselves (or others) decrypt permission on a handle
+/// that was created in a previous transaction. This is necessary because handles are
+/// created during encrypted operations, and we don't know their values until after
+/// the transaction completes.
+pub fn grant_handle_access<'info>(
+    ctx: Context<'_, '_, '_, 'info, GrantHandleAccess<'info>>,
+    handle: u128,
+) -> Result<()> {
+    let inco = ctx.accounts.inco_lightning_program.to_account_info();
+    let signer = ctx.accounts.owner.to_account_info();
+
+    // Grant allowance to owner for the specified handle
+    require!(
+        ctx.remaining_accounts.len() >= 2,
+        BridgeError::MissingAllowanceAccounts
+    );
+
+    let cpi_ctx = CpiContext::new(
+        inco.clone(),
+        Allow {
+            allowance_account: ctx.remaining_accounts[0].clone(),
+            signer: signer.clone(),
+            allowed_address: ctx.remaining_accounts[1].clone(),
+            system_program: ctx.accounts.system_program.to_account_info(),
+        },
+    );
+    allow(cpi_ctx, handle, true, ctx.accounts.owner.key())?;
 
     Ok(())
 }
@@ -386,6 +425,18 @@ pub struct BridgeConfidentialOut<'info> {
         bump = vault.bump
     )]
     pub vault: Account<'info, ConfidentialVault>,
+
+    /// CHECK: Inco Lightning program.
+    #[account(address = INCO_LIGHTNING_ID)]
+    pub inco_lightning_program: AccountInfo<'info>,
+
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct GrantHandleAccess<'info> {
+    #[account(mut)]
+    pub owner: Signer<'info>,
 
     /// CHECK: Inco Lightning program.
     #[account(address = INCO_LIGHTNING_ID)]

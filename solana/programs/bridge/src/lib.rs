@@ -604,6 +604,20 @@ pub mod bridge {
         confidential::bridge_confidential_out(ctx, encrypted_amount, destination_evm)
     }
 
+    /// Grant access to a handle for attested decryption.
+    /// This is needed as a second transaction after bridge_confidential_out
+    /// because we don't know the handle value until after it's created.
+    ///
+    /// # Arguments
+    /// * `ctx` - The context containing owner and Inco Lightning program
+    /// * `handle` - The 128-bit handle to grant access for
+    pub fn grant_handle_access<'a, 'info>(
+        ctx: Context<'a, '_, '_, 'info, GrantHandleAccess<'info>>,
+        handle: u128,
+    ) -> Result<()> {
+        confidential::grant_handle_access(ctx, handle)
+    }
+
     /// Receive confidential tokens from Base.
     /// Mints encrypted tokens to recipient's vault.
     ///

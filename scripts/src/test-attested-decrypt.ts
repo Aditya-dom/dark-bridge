@@ -20,7 +20,7 @@ const INCO_ATTESTED_DECRYPT_ENDPOINT =
     "https://grpc.solana-devnet.alpha.devnet.inco.org/crypto/getDecryptAttested";
 
 // The handle from our previous bridge transaction
-const HANDLE_FROM_SOLANA_TX = BigInt("116728168060053809117465790833559367355");
+const HANDLE_FROM_SOLANA_TX = BigInt("171523420492091030202552582106436067856");
 
 // Load wallet
 const keypairPath = path.join(process.env.HOME || "", ".config/solana/id.json");

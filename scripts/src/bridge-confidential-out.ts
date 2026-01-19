@@ -140,7 +140,14 @@ async function main() {
     // 2. vault (mut)
     // 3. inco_lightning_program
     // 4. system_program
-    // + remaining_accounts for allow() call
+    // 
+    // NOTE: We skip remaining_accounts for allow() calls because:
+    // - The allowance PDA is derived from handle + allowed_address
+    // - We don't know the handle until AFTER encrypted operations run
+    // - This is a chicken-and-egg problem in Inco Lightning's design
+    // 
+    // The handle should still be decryptable by the signer who created it
+    // via implicit ACL (signer-created handles are accessible to signer)
     
     const accounts = [
         { pubkey: payer.publicKey, isSigner: true, isWritable: true },

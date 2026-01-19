@@ -5,6 +5,12 @@
  * Monitors ConfidentialBridgeOutEvent on Solana and relays encrypted transfers to Base.
  * This is the privacy-preserving counterpart to auto-relayer.ts.
  * 
+ * Flow:
+ * 1. Parse ConfidentialBridgeOutEvent to get handle
+ * 2. Call grant_handle_access to enable attested decrypt
+ * 3. Use official Inco SDK to decrypt the handle
+ * 4. Mint the real decrypted amount on Base
+ * 
  * Usage:
  *   EVM_PRIVATE_KEY=0x... bun run src/privacy-relayer-sol-to-base.ts --monitor
  *   EVM_PRIVATE_KEY=0x... bun run src/privacy-relayer-sol-to-base.ts <SOLANA_TX_SIG>
@@ -27,7 +33,18 @@ import {
 } from "viem";
 import { baseSepolia } from "viem/chains";
 import { privateKeyToAccount } from "viem/accounts";
-import { Connection, PublicKey } from "@solana/web3.js";
+import { 
+    Connection, 
+    PublicKey, 
+    Keypair, 
+    SystemProgram,
+    TransactionInstruction,
+    Transaction,
+    sendAndConfirmTransaction
+} from "@solana/web3.js";
+import * as fs from "fs";
+import * as path from "path";
+import * as crypto from "crypto";
 
 import { CONFIGS } from "@internal/constants";
 import { getSolanaCliConfigKeypairSigner, getIdlConstant } from "@internal/sol";
@@ -52,6 +69,11 @@ const BRIDGE_PROGRAM_ID = new PublicKey("EEMKRm1ANMBZHS6yEi67bKVuZDPhztQHVWBzoFn
 
 // Inco Lightning Program ID
 const INCO_LIGHTNING_ID = new PublicKey("5sjEbPiqgZrYwR31ahR6Uk9wf5awoX61YGg7jExQSwaj");
+
+// Load Solana wallet for grant_handle_access
+const keypairPath = path.join(process.env.HOME || "", ".config/solana/id.json");
+const keypairData = JSON.parse(fs.readFileSync(keypairPath, "utf-8"));
+const solanaWallet = Keypair.fromSecretKey(new Uint8Array(keypairData));
 
 // --- Viem Clients ---
 const basePublicClient = createPublicClient({
@@ -291,6 +313,117 @@ async function requestAttestedDecryptSimple(handle: bigint): Promise<AttestedDec
 }
 
 /**
+ * Helper to convert handle to little-endian buffer
+ */
+function handleToBuffer(handle: bigint): Buffer {
+    const buffer = Buffer.alloc(16);
+    let remaining = handle;
+    for (let i = 0; i < 16; i++) {
+        buffer[i] = Number(remaining & BigInt(0xff));
+        remaining >>= BigInt(8);
+    }
+    return buffer;
+}
+
+/**
+ * Compute Anchor instruction discriminator
+ */
+function computeDiscriminator(name: string): Buffer {
+    const hash = crypto.createHash("sha256");
+    hash.update(name);
+    return Buffer.from(hash.digest().subarray(0, 8));
+}
+
+/**
+ * Derive the allowance PDA for Inco Lightning
+ */
+function deriveAllowancePDA(handle: bigint, allowedAddress: PublicKey): [PublicKey, number] {
+    const handleBuffer = handleToBuffer(handle);
+    return PublicKey.findProgramAddressSync(
+        [handleBuffer, allowedAddress.toBuffer()],
+        INCO_LIGHTNING_ID
+    );
+}
+
+/**
+ * Call grant_handle_access on Solana to enable attested decrypt
+ */
+async function grantHandleAccess(handle: bigint, owner: PublicKey): Promise<string> {
+    console.log(`   📝 Granting handle access for: ${handle}`);
+    
+    const connection = new Connection(config.solana.rpcUrl, "confirmed");
+    
+    // Derive allowance PDA
+    const [allowancePDA] = deriveAllowancePDA(handle, owner);
+    console.log(`      Allowance PDA: ${allowancePDA.toBase58()}`);
+    
+    // Build instruction
+    const discriminator = computeDiscriminator("global:grant_handle_access");
+    const handleBuffer = handleToBuffer(handle);
+    const instructionData = Buffer.concat([discriminator, handleBuffer]);
+    
+    const accounts = [
+        { pubkey: owner, isSigner: true, isWritable: true },
+        { pubkey: INCO_LIGHTNING_ID, isSigner: false, isWritable: false },
+        { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+        { pubkey: allowancePDA, isSigner: false, isWritable: true },
+        { pubkey: owner, isSigner: false, isWritable: false },
+    ];
+    
+    const instruction = new TransactionInstruction({
+        keys: accounts,
+        programId: BRIDGE_PROGRAM_ID,
+        data: instructionData,
+    });
+    
+    const tx = new Transaction().add(instruction);
+    tx.recentBlockhash = (await connection.getLatestBlockhash()).blockhash;
+    tx.feePayer = owner;
+    
+    const sig = await sendAndConfirmTransaction(connection, tx, [solanaWallet], {
+        commitment: "confirmed",
+    });
+    
+    console.log(`      ✅ Handle access granted: ${sig}`);
+    return sig;
+}
+
+/**
+ * Use official Inco SDK to decrypt handle
+ */
+async function decryptWithOfficialSDK(handle: bigint): Promise<bigint | null> {
+    try {
+        const { decrypt } = await import("@inco/solana-sdk/attested-decrypt");
+        const nacl = await import("tweetnacl");
+        
+        const walletAdapter = {
+            publicKey: solanaWallet.publicKey,
+            signMessage: async (message: Uint8Array): Promise<Uint8Array> => {
+                return nacl.sign.detached(message, solanaWallet.secretKey);
+            },
+        };
+        
+        console.log(`   🔓 Decrypting handle with official SDK...`);
+        
+        const result = await decrypt([handle.toString()], {
+            address: solanaWallet.publicKey,
+            signMessage: walletAdapter.signMessage,
+        });
+        
+        if (result.plaintexts && result.plaintexts.length > 0) {
+            const plaintext = BigInt(result.plaintexts[0]);
+            console.log(`      ✅ Decrypted: ${plaintext} tokens`);
+            return plaintext;
+        }
+        
+        return null;
+    } catch (e: any) {
+        console.log(`      ❌ SDK decrypt failed: ${e.message}`);
+        return null;
+    }
+}
+
+/**
  * Relay a confidential bridge message from Solana to Base.
  */
 async function relayConfidentialToBase(txSignature: string): Promise<boolean> {
@@ -345,21 +478,37 @@ async function relayConfidentialToBase(txSignature: string): Promise<boolean> {
         }
         console.log(`   Inco fee: ${incoFee} wei`);
 
-        // 5. Try attested decrypt to get the actual plaintext amount
+        // 5. Grant handle access and decrypt using official SDK
         let amountToMint: bigint;
         
-        // First try simple decrypt (for testing)
-        const decryptResult = await requestAttestedDecryptSimple(event.encryptedAmountHandle);
+        // Check if we're the owner (can grant access)
+        const ownerPubkey = new PublicKey(event.owner);
+        const isOwner = ownerPubkey.equals(solanaWallet.publicKey);
         
-        if (decryptResult && decryptResult.plaintext > 0n) {
-            console.log(`   ✅ Attested decrypt succeeded!`);
-            console.log(`      Plaintext amount: ${decryptResult.plaintext}`);
-            amountToMint = decryptResult.plaintext;
+        if (isOwner) {
+            try {
+                // Step 1: Grant handle access
+                await grantHandleAccess(event.encryptedAmountHandle, ownerPubkey);
+                
+                // Step 2: Decrypt with official SDK
+                const plaintext = await decryptWithOfficialSDK(event.encryptedAmountHandle);
+                
+                if (plaintext !== null && plaintext > 0n) {
+                    console.log(`   ✅ Real amount decrypted: ${plaintext} tokens`);
+                    amountToMint = plaintext;
+                } else {
+                    console.log(`   ⚠️ Decrypt returned 0, using demo fallback`);
+                    amountToMint = BigInt(5);
+                }
+            } catch (e: any) {
+                console.log(`   ⚠️ Grant/decrypt failed: ${e.message}`);
+                console.log(`   Using demo fallback amount`);
+                amountToMint = BigInt(5);
+            }
         } else {
-            // Fallback to demo amount
-            console.log(`   ⚠️ Attested decrypt not available, using demo amount`);
-            console.log(`   (This is expected in dev - Inco handles are chain-specific)`);
-            amountToMint = BigInt(5); // Demo fallback
+            // Not the owner, can only use demo mode
+            console.log(`   ⚠️ Not the owner (${event.owner}), using demo amount`);
+            amountToMint = BigInt(5);
         }
         
         console.log(`   Amount to mint: ${amountToMint} tokens`);
