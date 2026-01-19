@@ -275,9 +275,9 @@ contract ConfidentialCrossChainERC20 is Initializable {
         emit ConfidentialMint(to, amount);
     }
 
-    /// @notice Confidentially burn tokens (bridge only).
+    /// @notice Confidentially burn tokens (bridge only) from ciphertext.
     /// @param from Address to burn from.
-    /// @param encryptedAmount Encrypted amount to burn.
+    /// @param encryptedAmount Encrypted amount to burn (ciphertext bytes).
     function confidentialBurn(
         address from,
         bytes calldata encryptedAmount
@@ -287,6 +287,27 @@ contract ConfidentialCrossChainERC20 is Initializable {
         euint256 amount = encryptedAmount.newEuint256(msg.sender);
         e.allow(amount, address(this));
 
+        _burnInternal(from, amount);
+    }
+
+    /// @notice Confidentially burn tokens (bridge only) from existing handle.
+    /// @dev Used when the handle has already been created from ciphertext.
+    /// @param from Address to burn from.
+    /// @param amount Encrypted amount handle to burn.
+    function confidentialBurnFromHandle(
+        address from,
+        euint256 amount
+    ) external onlyBridge {
+        require(from != address(0), ZeroAddress());
+        // Verify bridge has access to this handle
+        require(msg.sender.isAllowed(amount), "Unauthorized handle access");
+        e.allow(amount, address(this));
+
+        _burnInternal(from, amount);
+    }
+
+    /// @notice Internal burn logic shared by both confidentialBurn variants.
+    function _burnInternal(address from, euint256 amount) internal {
         // Check balance and subtract
         ebool hasSufficient = e.ge(_balances[from], amount);
         euint256 actualBurn = e.select(hasSufficient, amount, e.asEuint256(0));
@@ -399,6 +420,14 @@ contract ConfidentialCrossChainERC20 is Initializable {
         require(_underlyingToken == address(0), "Already set");
         require(token != address(0), ZeroAddress());
         _underlyingToken = token;
+    }
+
+    /// @notice Set remote token (callable by anyone if not set).
+    /// @dev For hackathon demo - allows setting the Solana token mint address.
+    function setRemoteTokenForDemo(bytes32 remoteToken_) external {
+        require(_remoteToken == bytes32(0), "Already set");
+        require(remoteToken_ != bytes32(0), ZeroAddress());
+        _remoteToken = remoteToken_;
     }
 
     //////////////////////////////////////////////////////////////

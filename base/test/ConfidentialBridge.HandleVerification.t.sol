@@ -61,7 +61,7 @@ contract ConfidentialBridgeHandleVerificationTest is Test {
 
         vm.startPrank(deployer);
         factory = new CrossChainERC20Factory(DEPLOYED_BRIDGE);
-        confidentialBridge = new ConfidentialBridge(DEPLOYED_BRIDGE, address(factory));
+        confidentialBridge = new ConfidentialBridge(DEPLOYED_BRIDGE, address(factory), deployer);
         confidentialToken = new ConfidentialCrossChainERC20(address(confidentialBridge));
         
         // Note: Skipping initialize since implementation has _disableInitializers()

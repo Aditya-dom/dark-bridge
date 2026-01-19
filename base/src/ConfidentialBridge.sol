@@ -152,14 +152,17 @@ contract ConfidentialBridge is ReentrancyGuardTransient, OwnableRoles, Initializ
         require(localToken != address(0), ZeroAddress());
         require(toSolana != bytes32(0), ZeroAddress());
 
-        // Create encrypted handle from ciphertext
+        // Create encrypted handle from ciphertext (only done ONCE here)
         euint256 amount = encryptedAmount.newEuint256(msg.sender);
+        // Allow both this contract AND the token contract to use the handle
         e.allow(amount, address(this));
+        e.allow(amount, localToken);
 
-        // Burn from sender's confidential balance
-        ConfidentialCrossChainERC20(localToken).confidentialBurn{value: inco.getFee()}(
+        // Burn from sender's confidential balance using the handle (not the raw ciphertext)
+        // This avoids calling newEuint256 twice on the same ciphertext
+        ConfidentialCrossChainERC20(localToken).confidentialBurnFromHandle(
             msg.sender,
-            encryptedAmount
+            amount
         );
 
         // Get remote token mapping
@@ -195,12 +198,16 @@ contract ConfidentialBridge is ReentrancyGuardTransient, OwnableRoles, Initializ
         require(localToken != address(0), ZeroAddress());
         require(toSolana != bytes32(0), ZeroAddress());
 
+        // Create encrypted handle from ciphertext (only done ONCE here)
         euint256 amount = encryptedAmount.newEuint256(msg.sender);
+        // Allow both this contract AND the token contract to use the handle
         e.allow(amount, address(this));
+        e.allow(amount, localToken);
 
-        ConfidentialCrossChainERC20(localToken).confidentialBurn{value: inco.getFee()}(
+        // Burn from sender's confidential balance using the handle (not the raw ciphertext)
+        ConfidentialCrossChainERC20(localToken).confidentialBurnFromHandle(
             msg.sender,
-            encryptedAmount
+            amount
         );
 
         Pubkey remoteToken = Pubkey.wrap(

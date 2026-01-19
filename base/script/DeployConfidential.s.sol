@@ -24,19 +24,20 @@ contract DeployConfidential is Script {
 
         vm.startBroadcast(deployerPrivateKey);
 
-        // Deploy Confidential Token Implementation
-        ConfidentialCrossChainERC20 tokenImpl = new ConfidentialCrossChainERC20(
-            EXISTING_BRIDGE
-        );
-        console2.log("ConfidentialCrossChainERC20 impl:", address(tokenImpl));
-
-        // Deploy Confidential Bridge with owner
+        // Deploy Confidential Bridge first (we need its address for the token)
         ConfidentialBridge confidentialBridge = new ConfidentialBridge(
             EXISTING_BRIDGE,
             FACTORY,
             deployer // owner (also gets guardian role)
         );
         console2.log("ConfidentialBridge:", address(confidentialBridge));
+
+        // Deploy Confidential Token Implementation with the ConfidentialBridge as its bridge
+        // This allows ConfidentialBridge to call confidentialBurnFromHandle
+        ConfidentialCrossChainERC20 tokenImpl = new ConfidentialCrossChainERC20(
+            address(confidentialBridge)
+        );
+        console2.log("ConfidentialCrossChainERC20 impl:", address(tokenImpl));
 
         vm.stopBroadcast();
 

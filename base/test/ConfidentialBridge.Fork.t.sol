@@ -60,7 +60,7 @@ contract ConfidentialBridgeForkTest is Test {
 
         // Deploy Confidential Bridge with deployed bridge and a placeholder factory
         // Note: Using deployer as factory placeholder for testing
-        confidentialBridge = new ConfidentialBridge(DEPLOYED_BRIDGE, deployer);
+        confidentialBridge = new ConfidentialBridge(DEPLOYED_BRIDGE, deployer, deployer);
 
         vm.stopPrank();
 
@@ -217,12 +217,12 @@ contract ConfidentialBridgeForkTest is Test {
 
     function test_fork_revertOnZeroAddressBridge() public {
         vm.expectRevert(ConfidentialBridge.ZeroAddress.selector);
-        new ConfidentialBridge(address(0), deployer);
+        new ConfidentialBridge(address(0), deployer, deployer);
     }
 
     function test_fork_revertOnZeroAddressFactory() public {
         vm.expectRevert(ConfidentialBridge.ZeroAddress.selector);
-        new ConfidentialBridge(DEPLOYED_BRIDGE, address(0));
+        new ConfidentialBridge(DEPLOYED_BRIDGE, address(0), deployer);
     }
 
     function test_fork_revertOnZeroAddressTokenBridge() public {
@@ -237,7 +237,7 @@ contract ConfidentialBridgeForkTest is Test {
     function test_fork_onlyBridgeCanReceiveFromSolana() public {
         // Non-bridge caller should be rejected
         vm.prank(user);
-        vm.expectRevert(ConfidentialBridge.Unauthorized.selector);
+        vm.expectRevert(ConfidentialBridge.SenderNotBridge.selector);
         confidentialBridge.receiveFromSolana(
             0, // nonce
             address(confidentialToken),
@@ -276,7 +276,7 @@ contract ConfidentialBridgeForkTest is Test {
         uint256 tokenDeployGas = gasBefore - gasleft();
 
         gasBefore = gasleft();
-        ConfidentialBridge newBridge = new ConfidentialBridge(DEPLOYED_BRIDGE, deployer);
+        ConfidentialBridge newBridge = new ConfidentialBridge(DEPLOYED_BRIDGE, deployer, deployer);
         uint256 bridgeDeployGas = gasBefore - gasleft();
 
         vm.stopPrank();

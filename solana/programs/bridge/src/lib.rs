@@ -619,6 +619,21 @@ pub mod bridge {
         confidential::receive_confidential_in(ctx, encrypted_amount, base_sender)
     }
 
+    /// Relay receive confidential tokens from Base (guardian-authorized).
+    /// Called by relayer to mint encrypted tokens using bridge_authority PDA.
+    ///
+    /// # Arguments
+    /// * `ctx` - The context containing vault, bridge state, and relayer
+    /// * `encrypted_amount` - Encrypted amount ciphertext from Base
+    /// * `base_sender` - 20-byte Ethereum sender address on Base
+    pub fn relay_receive_confidential<'a, 'info>(
+        ctx: Context<'a, '_, '_, 'info, RelayReceiveConfidential<'info>>,
+        encrypted_amount: Vec<u8>,
+        base_sender: [u8; 20],
+    ) -> Result<()> {
+        confidential::relay_receive_confidential(ctx, encrypted_amount, base_sender)
+    }
+
     /// Deposit plaintext SPL tokens into a confidential vault.
     /// Converts regular token balance to encrypted balance.
     ///

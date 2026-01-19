@@ -153,6 +153,59 @@ pub fn receive_confidential_in<'info>(
     Ok(())
 }
 
+/// Bridge authority seed for PDA derivation.
+pub const BRIDGE_AUTHORITY_SEED: &[u8] = b"bridge_authority";
+
+/// Relay receive confidential tokens from Base (guardian-authorized).
+///
+/// This is called by an authorized relayer/guardian to mint encrypted tokens
+/// to the user's vault from a bridge message. The relayer signs for Inco operations.
+pub fn relay_receive_confidential<'info>(
+    ctx: Context<'_, '_, '_, 'info, RelayReceiveConfidential<'info>>,
+    encrypted_amount: Vec<u8>,
+    base_sender: [u8; 20],
+) -> Result<()> {
+    let vault = &mut ctx.accounts.vault;
+    let inco = ctx.accounts.inco_lightning_program.to_account_info();
+    
+    // Use relayer as the signer for Inco operations
+    // The relayer is the authorized entity that can mint to vaults
+    let signer = ctx.accounts.relayer.to_account_info();
+
+    // Create encrypted handle from ciphertext
+    let cpi_ctx = CpiContext::new(inco.clone(), Operation { signer: signer.clone() });
+    let amount: Euint128 = new_euint128(cpi_ctx, encrypted_amount, 0)?;
+
+    // Add to vault balance
+    let cpi_ctx = CpiContext::new(inco.clone(), Operation { signer: signer.clone() });
+    let new_balance: Euint128 = e_add(cpi_ctx, vault.encrypted_balance, amount, 0)?;
+    vault.encrypted_balance = new_balance;
+
+    // Grant allowance to owner for updated balance
+    if ctx.remaining_accounts.len() >= 2 {
+        let cpi_ctx = CpiContext::new(
+            inco.clone(),
+            Allow {
+                allowance_account: ctx.remaining_accounts[0].clone(),
+                signer: signer.clone(),
+                allowed_address: ctx.remaining_accounts[1].clone(),
+                system_program: ctx.accounts.system_program.to_account_info(),
+            },
+        );
+        allow(cpi_ctx, new_balance.0, true, vault.owner)?;
+    }
+
+    // Emit receive event
+    emit!(ConfidentialBridgeInEvent {
+        vault: vault.key(),
+        owner: vault.owner,
+        base_sender,
+        encrypted_amount_handle: amount.0,
+    });
+
+    Ok(())
+}
+
 /// Deposit plaintext SPL tokens into a confidential vault.
 /// 
 /// This transfers tokens from the user and adds to their encrypted balance.
@@ -333,6 +386,44 @@ pub struct ReceiveConfidentialIn<'info> {
     #[account(
         mut,
         has_one = bridge_authority,
+        seeds = [ConfidentialVault::SEED_PREFIX, vault.owner.as_ref(), vault.token_mint.as_ref()],
+        bump = vault.bump
+    )]
+    pub vault: Account<'info, ConfidentialVault>,
+
+    /// CHECK: Inco Lightning program.
+    #[account(address = INCO_LIGHTNING_ID)]
+    pub inco_lightning_program: AccountInfo<'info>,
+
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct RelayReceiveConfidential<'info> {
+    /// The relayer/guardian who is authorized to relay messages.
+    #[account(mut)]
+    pub relayer: Signer<'info>,
+
+    /// The bridge state (for guardian verification).
+    #[account(
+        seeds = [b"bridge"],
+        bump,
+    )]
+    pub bridge: Account<'info, crate::common::state::Bridge>,
+
+    /// The bridge authority PDA (signs for Inco operations).
+    /// CHECK: This is a PDA that will sign via seeds.
+    #[account(
+        mut,
+        seeds = [BRIDGE_AUTHORITY_SEED],
+        bump
+    )]
+    pub bridge_authority: AccountInfo<'info>,
+
+    /// The recipient vault.
+    #[account(
+        mut,
+        constraint = vault.bridge_authority == bridge_authority.key(),
         seeds = [ConfidentialVault::SEED_PREFIX, vault.owner.as_ref(), vault.token_mint.as_ref()],
         bump = vault.bump
     )]

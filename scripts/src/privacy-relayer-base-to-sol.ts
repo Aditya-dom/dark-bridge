@@ -48,9 +48,9 @@ if (!EVM_PRIVATE_KEY) {
 
 const evmAccount = privateKeyToAccount(EVM_PRIVATE_KEY as `0x${string}`);
 
-// Deployed addresses (from CLAUDE.md)
-const CONFIDENTIAL_BRIDGE_ADDRESS = "0x7C788FE737acf46e2dbc2F6219653533bd02c558" as Address;
-const CONFIDENTIAL_TOKEN_ADDRESS = "0x905367eff70fE43F0792bf16DB183a6929E181d7" as Address;
+// Deployed addresses (v5 - with setRemoteTokenForDemo)
+const CONFIDENTIAL_BRIDGE_ADDRESS = "0x1C5d960F3757C59BEC347a536F4B811310B6f2aa" as Address;
+const CONFIDENTIAL_TOKEN_ADDRESS = "0x2C492Fc664e54903A966d5D7f666556FF5BeF9F1" as Address;
 
 // Bridge Program ID
 const BRIDGE_PROGRAM_ID = new PublicKey("EEMKRm1ANMBZHS6yEi67bKVuZDPhztQHVWBzoFnoVbh9");
@@ -192,11 +192,13 @@ async function relayConfidentialToSolana(txHash: string): Promise<boolean> {
         console.log(`   Solana Payer: ${payer.address}`);
 
         // 5. Find the recipient's vault PDA
-        // For the hackathon, we'll use a placeholder token mint
-        // In production, this would be derived from the remoteToken
-        const tokenMint = new PublicKey(event.remoteToken.slice(0, 66)); // Truncate to valid pubkey
+        // For the hackathon, we'll use the remoteToken as the Solana token mint
+        // The remoteToken is bytes32 which encodes a 32-byte Solana pubkey
+        const remoteTokenBytes = toBytes(event.remoteToken);
+        const tokenMint = new PublicKey(remoteTokenBytes);
+        console.log(`   Token Mint: ${tokenMint.toBase58()}`);
 
-        const [vaultPda] = PublicKey.findProgramAddressSync(
+        const [vaultPda, vaultBump] = PublicKey.findProgramAddressSync(
             [
                 Buffer.from("confidential_vault"),
                 recipientPubkey.toBuffer(),
@@ -206,38 +208,111 @@ async function relayConfidentialToSolana(txHash: string): Promise<boolean> {
         );
         console.log(`   Vault PDA: ${vaultPda.toBase58()}`);
 
-        // 6. Build the receive_confidential_in instruction
-        // This requires the bridge authority to be the signer
-        const [bridgeAuthority] = PublicKey.findProgramAddressSync(
+        // 6. Find the bridge authority PDA
+        const [bridgeAuthority, bridgeAuthBump] = PublicKey.findProgramAddressSync(
             [Buffer.from("bridge_authority")],
             BRIDGE_PROGRAM_ID
         );
+        console.log(`   Bridge Authority: ${bridgeAuthority.toBase58()}`);
 
-        // 7. Build instruction data for receive_confidential_in
-        // Anchor discriminator + encrypted_amount + base_sender
-        const discriminator = Buffer.from([/* anchor discriminator for receive_confidential_in */]);
+        // 7. Find the bridge state PDA
+        const [bridgeState, bridgeBump] = PublicKey.findProgramAddressSync(
+            [Buffer.from("bridge")],
+            BRIDGE_PROGRAM_ID
+        );
+        console.log(`   Bridge State: ${bridgeState.toBase58()}`);
 
-        // For now, log what would be called
-        console.log(`\n   📝 Would call receive_confidential_in with:`);
-        console.log(`      vault: ${vaultPda.toBase58()}`);
-        console.log(`      bridge_authority: ${bridgeAuthority.toBase58()}`);
-        console.log(`      encrypted_amount: [${encryptedAmountBytes.length} bytes]`);
-        console.log(`      base_sender: 0x${Buffer.from(baseSender).toString("hex")}`);
+        // 8. Check if vault exists
+        const connection = new Connection(config.solana.rpcUrl, "confirmed");
+        const vaultAccountInfo = await connection.getAccountInfo(vaultPda);
+        
+        if (!vaultAccountInfo) {
+            console.log(`\n   ⚠️  Vault does not exist for recipient!`);
+            console.log(`   The recipient needs to initialize a ConfidentialVault first.`);
+            console.log(`   Vault PDA: ${vaultPda.toBase58()}`);
+            console.log(`   Owner: ${recipientPubkey.toBase58()}`);
+            console.log(`   Token Mint: ${tokenMint.toBase58()}`);
+            console.log(`\n   To initialize, call initialize_confidential_vault on Solana.`);
+            return false;
+        }
 
-        // 8. TODO: Actually send the transaction
-        // This requires:
-        // - The bridge authority PDA to sign (needs to be a PDA signer)
-        // - Or the relayer to have been granted authority
+        // 9. Build the relay_receive_confidential instruction
+        // Anchor discriminator for "relay_receive_confidential" = sha256("global:relay_receive_confidential")[0:8]
+        const crypto = await import("crypto");
+        const discriminator = crypto.createHash("sha256")
+            .update("global:relay_receive_confidential")
+            .digest()
+            .slice(0, 8);
 
-        console.log(`\n   ⚠️  Transaction building not yet implemented`);
-        console.log(`   The receive_confidential_in instruction requires bridge authority.`);
-        console.log(`   For the hackathon demo, run the CLI command manually:`);
-        console.log(`\n   bun run tx:receive-confidential-in \\`);
-        console.log(`     --vault ${vaultPda.toBase58()} \\`);
-        console.log(`     --amount ${Buffer.from(encryptedAmountBytes).toString("hex")} \\`);
-        console.log(`     --sender ${evmAccount.address}`);
+        // Instruction data: discriminator + encrypted_amount (Vec<u8>) + base_sender ([u8; 20])
+        // Vec<u8> in Borsh: 4-byte length (little endian) + data
+        const encryptedLenBuf = Buffer.alloc(4);
+        encryptedLenBuf.writeUInt32LE(encryptedAmountBytes.length, 0);
+        
+        const instructionData = Buffer.concat([
+            discriminator,
+            encryptedLenBuf,
+            Buffer.from(encryptedAmountBytes),
+            Buffer.from(baseSender),
+        ]);
 
-        return true;
+        console.log(`\n   📝 Building relay_receive_confidential instruction:`);
+        console.log(`      Discriminator: ${discriminator.toString("hex")}`);
+        console.log(`      Encrypted amount: ${encryptedAmountBytes.length} bytes`);
+        console.log(`      Base sender: 0x${Buffer.from(baseSender).toString("hex")}`);
+
+        // 10. Create instruction with accounts in order:
+        // 1. relayer (signer, mutable)
+        // 2. bridge (PDA)
+        // 3. bridge_authority (PDA, mutable)
+        // 4. vault (PDA, mutable)
+        // 5. inco_lightning_program
+        // 6. system_program
+        const payerKeypair = Keypair.fromSecretKey(
+            Uint8Array.from(JSON.parse(require("fs").readFileSync(
+                require("os").homedir() + "/.config/solana/id.json", "utf-8"
+            )))
+        );
+
+        const instruction = new TransactionInstruction({
+            programId: BRIDGE_PROGRAM_ID,
+            keys: [
+                { pubkey: payerKeypair.publicKey, isSigner: true, isWritable: true },  // relayer
+                { pubkey: bridgeState, isSigner: false, isWritable: false },            // bridge
+                { pubkey: bridgeAuthority, isSigner: false, isWritable: true },         // bridge_authority
+                { pubkey: vaultPda, isSigner: false, isWritable: true },                // vault
+                { pubkey: INCO_LIGHTNING_ID, isSigner: false, isWritable: false },      // inco_lightning_program
+                { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }, // system_program
+            ],
+            data: instructionData,
+        });
+
+        console.log(`\n   📤 Sending Solana transaction...`);
+
+        // 11. Send transaction
+        const { Transaction, sendAndConfirmTransaction } = await import("@solana/web3.js");
+        const tx = new Transaction().add(instruction);
+        
+        try {
+            const signature = await sendAndConfirmTransaction(
+                connection,
+                tx,
+                [payerKeypair],
+                { commitment: "confirmed" }
+            );
+            
+            console.log(`   ✅ Transaction confirmed!`);
+            console.log(`   Signature: ${signature}`);
+            console.log(`   Explorer: https://explorer.solana.com/tx/${signature}?cluster=devnet`);
+            return true;
+        } catch (txError: any) {
+            console.error(`   ❌ Transaction failed: ${txError.message}`);
+            if (txError.logs) {
+                console.error(`   Logs:`);
+                txError.logs.forEach((log: string) => console.error(`      ${log}`));
+            }
+            return false;
+        }
 
     } catch (error: any) {
         console.error(`   ❌ Error: ${error.message}`);

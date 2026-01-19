@@ -138,7 +138,8 @@ contract ConfidentialBridgeE2EForkTest is Test {
         // Deploy Confidential Bridge
         confidentialBridge = new ConfidentialBridge(
             DEPLOYED_BRIDGE,
-            address(factory)
+            address(factory),
+            deployer
         );
 
         // Deploy Confidential Token Implementation
@@ -508,7 +509,7 @@ contract ConfidentialBridgeE2EForkTest is Test {
 
     function test_e2e_fork_revertOnUnauthorizedReceive() public {
         vm.prank(alice); // Not the bridge
-        vm.expectRevert(ConfidentialBridge.Unauthorized.selector);
+        vm.expectRevert(ConfidentialBridge.SenderNotBridge.selector);
         confidentialBridge.receiveFromSolana{value: 0.01 ether}(
             0, // nonce
             address(confidentialToken),

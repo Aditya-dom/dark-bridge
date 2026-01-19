@@ -127,13 +127,14 @@ bun run src/generate-test-ciphertexts.ts
 1. **Base → Solana**: Initiate on Base, wait ~15 minutes for root posting, then prove + finalize on Solana
 2. **Solana → Base**: Direct execution after message creation
 
-### Privacy Flow (Inco Lightning)
+### Privacy Flow (Inco Lightning - TEE-based)
 
 1. User encrypts amount using `@inco/js` SDK (EVM) or `@inco/solana-sdk` (SVM)
 2. Encrypted ciphertext passed to bridge contract/program
-3. Bridge stores encrypted handle (reference to off-chain encrypted data)
-4. Operations (add, sub, compare) performed on encrypted values via CPI
+3. Bridge stores encrypted handle (reference to value in TEE network)
+4. Operations (add, sub, compare) performed via CPI - TEE decrypts, computes, re-encrypts
 5. Handle verified on receive to prevent substitution attacks
+6. **Privacy preserved**: Plaintext only exists inside TEE, never on-chain
 
 ### Bidirectional Bridge Client (Added in 6d71c93)
 
@@ -285,7 +286,46 @@ When running fork tests with mock encrypted amounts:
 
 ## Inco Lightning Integration
 
-Inco Lightning is a **confidentiality layer** for blockchains using TEE-based covalidators (not FHE). It provides encrypted data types where **handles** (bytes32/u128) reference encrypted values stored off-chain.
+Inco Lightning is a **confidentiality layer** for blockchains using **Trusted Execution Environments (TEEs)** - NOT Fully Homomorphic Encryption (FHE). It provides encrypted data types where **handles** (bytes32/u128) reference private values processed securely inside hardware enclaves.
+
+### How TEE-Based Privacy Works
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    INCO LIGHTNING ARCHITECTURE (TEE-based)                  │
+├─────────────────────────────────────────────────────────────────────────────┤
+│   On-Chain (Base/Solana)              Inco TEE Network (Off-Chain)          │
+│   ──────────────────────              ────────────────────────────          │
+│                                                                             │
+│   Only HANDLES stored                 ┌───────────────────────────┐         │
+│   (opaque references)                 │  Trusted Execution Env    │         │
+│         │                             │  ┌─────────────────────┐  │         │
+│         │ CPI/Precompile              │  │ Private Data Store  │  │         │
+│         ▼                             │  │ handle → plaintext  │  │         │
+│   e_add(h1, h2)  ────────────────────▶│  └─────────────────────┘  │         │
+│                                       │         │                 │         │
+│                                       │         ▼                 │         │
+│                                       │  1. Lookup h1, h2         │         │
+│                                       │  2. Decrypt in TEE        │         │
+│                                       │  3. Add plaintexts        │         │
+│                                       │  4. Re-encrypt result     │         │
+│   new_handle h3  ◀────────────────────│  5. Return new handle     │         │
+│                                       │                           │         │
+│                                       │  TEE Attestation proves   │         │
+│                                       │  correct execution        │         │
+│                                       └───────────────────────────┘         │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### TEE vs FHE Comparison
+
+| Aspect | FHE (Old Approach) | TEE / Inco Lightning (Current) |
+|--------|-------------------|-------------------------------|
+| **Where computation happens** | On encrypted data directly | Inside secure hardware enclave on plaintext |
+| **Speed** | Very slow (heavy crypto) | Lightning fast (native CPU in TEE) |
+| **Trust model** | Math-based (no trust needed) | Hardware-based (trust TEE attestation) |
+| **Operations** | Limited by FHE scheme | Any computation possible |
+| **Verification** | Cryptographic proof | TEE attestation signatures |
 
 ### Key Concepts
 
@@ -764,16 +804,23 @@ EVM_PRIVATE_KEY=0x... bun run src/auto-relayer-base-sol.ts <BASE_TX_HASH>
 
 ## Privacy Bridge with Inco Lightning
 
-Dark Bridge includes a **complete privacy layer** using Inco Lightning for encrypted computation, making it the **first bidirectional privacy bridge** between Base (EVM) and Solana (SVM). Inco uses encrypted handles that reference values stored off-chain by covalidators, enabling arithmetic and comparison operations on encrypted data.
+Dark Bridge includes a **complete privacy layer** using Inco Lightning for confidential computation, making it the **first bidirectional privacy bridge** between Base (EVM) and Solana (SVM). 
+
+**Important**: Inco Lightning uses **Trusted Execution Environments (TEEs)**, NOT Fully Homomorphic Encryption (FHE). Handles reference private values that are:
+- Stored securely in the Inco TEE network
+- Decrypted only inside hardware enclaves for computation
+- Re-encrypted before returning results
+- Never exposed as plaintext on-chain
 
 ### Privacy Features
 
 - ✅ **Encrypted Amounts**: All transfer amounts encrypted using Inco SDK
-- ✅ **Encrypted Balances**: Token balances stored as encrypted handles (euint256/Euint128)
-- ✅ **Cross-Chain Privacy**: Encryption preserved during bridging via handle conversion
-- ✅ **Encrypted Operations**: Add, subtract, compare on encrypted data via CPI
+- ✅ **Encrypted Balances**: Token balances stored as handles (euint256/Euint128)
+- ✅ **Cross-Chain Privacy**: Privacy preserved during bridging via handle conversion
+- ✅ **TEE-Based Compute**: Add, subtract, compare performed inside secure enclaves
 - ✅ **Handle Verification**: Prevents swap attacks via nonce mapping
 - ✅ **Access Control**: `allow()` grants decryption permissions to specific addresses
+- ✅ **Attestation**: TEE signatures prove correct execution
 
 ### Quick Start: Privacy Bridge
 
@@ -859,10 +906,10 @@ allow(cpi_ctx, new_balance.0, true, owner)?;
 ```
 1. Encrypt amount: @inco/js → euint256 ciphertext
 2. Call: ConfidentialBridge.bridgePrivateToSolana()
-3. Burns from ConfidentialCrossChainERC20 (encrypted)
-4. Privacy relayer converts: euint256 → Euint128
-5. Mints to ConfidentialVault on Solana (encrypted)
-✅ Amount NEVER decrypted!
+3. Burns from ConfidentialCrossChainERC20 (via TEE compute)
+4. Privacy relayer converts: euint256 (32 bytes) → Euint128 (16 bytes)
+5. Mints to ConfidentialVault on Solana (via TEE compute)
+✅ Amount NEVER exposed - only exists inside TEE!
 ```
 
 **Solana → Base:**
@@ -870,10 +917,10 @@ allow(cpi_ctx, new_balance.0, true, owner)?;
 ```
 1. Encrypt amount: @inco/solana-sdk → Euint128 ciphertext
 2. Call: bridge.bridge_confidential_out()
-3. Burns from ConfidentialVault (encrypted)
+3. Burns from ConfidentialVault (via TEE compute)
 4. Privacy relayer converts: Euint128 → euint256
-5. Mints to ConfidentialCrossChainERC20 on Base (encrypted)
-✅ Amount NEVER decrypted!
+5. Mints to ConfidentialCrossChainERC20 on Base (via TEE compute)
+✅ Amount NEVER exposed - only exists inside TEE!
 ```
 
 ### Privacy Testing
@@ -1000,9 +1047,124 @@ bun run src/generate-test-ciphertexts.ts
 |-----------|-----------|------------------|----------|
 | Encrypt balance | ~200k | N/A | 0.005 ETH |
 | Private transfer | ~250k | ~15k CU | 0.005 ETH |
-| Private bridge | ~220k | ~12k CU | 0.005 ETH |
+| Private bridge | ~220k | ~28k CU | 0.005 ETH |
 | Handle verification | ~50k | N/A | 0.003 ETH |
 
 *Testnet measurements*
+
+---
+
+## Verified End-to-End Privacy Bridge (January 2026)
+
+The Base ↔ Solana privacy bridge has been **fully tested and verified** with real Inco Lightning integration on both chains.
+
+### Successful Transactions
+
+| Direction | Chain | Transaction |
+|-----------|-------|-------------|
+| Base → Solana (initiate) | Base Sepolia | `0x24906e78b14ed37d62c597259385a07d52c0157b60e222499ec1ba5ed51501b1` |
+| Base → Solana (relay) | Solana Devnet | `4RKWxhbAjs4TK3jyfBAc73M6hUVcHWRthP7RJ5AeLtryECuhSWzZH2FSzBCULbyojZ8GNRSi3bpCCKPorfFBzNya` |
+
+### Verified Inco Operations
+
+**On Base (EVM):**
+```
+Inco Precompile: 0x4732520194584a04Cac0224e067658619F4086bD
+Operations:
+  1. newEuint256() - Created encrypted handle from user's ciphertext
+  2. e.allow() - Granted ACL for bridge contract
+  3. e.allow() - Granted ACL for token contract  
+  4. e.sub() - Subtracted encrypted amount from balance
+  5. Emitted handle in ConfidentialBridgeInitiated event
+```
+
+**On Solana (SVM):**
+```
+Inco Lightning Program: 5sjEbPiqgZrYwR31ahR6Uk9wf5awoX61YGg7jExQSwaj
+CPI Calls (from transaction logs):
+  1. NewEuint128 - Created handle from ciphertext bytes
+     Input: [0, 8, 0, 122, 1, 24, 175, 162, 21, 247, 246, 65, 177, 240, 175, 115]
+     Result: 73856371933150398353131193095701286645
+  
+  2. EAdd - Added bridged amount to vault balance (inside TEE)
+     LHS: 54261709583977038884628912189548807991
+     RHS: 73856371933150398353131193095701286645
+     Result: 132730140503005526778731605968183244955
+```
+
+### What Observers See vs What's Hidden
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ VISIBLE ON-CHAIN (Public)                                                  │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ • Sender address: 0xf8af04bf0ac151f2050436603d81ba20f449028f               │
+│ • Recipient vault: Gui8LGdtRwLJL772q1YuVJyRCD8RFbUe6rHiZu6f8Goc            │
+│ • That a bridge transfer happened                                          │
+│ • Encrypted handle: 0xbbf3133ae55abf2b...7a000800                          │
+│ • Token contract addresses                                                 │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ HIDDEN (Private - Processed inside TEE)                                    │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ • Actual transfer amount (100 tokens, 1000 tokens, etc.)                   │
+│ • User's total balance before and after                                   │
+│ • Any intermediate computation values                                      │
+│ • Decryption only possible by authorized addresses                         │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Deployed Contract Addresses (v5 - January 2026)
+
+**Base Sepolia:**
+| Contract | Address |
+|----------|---------|
+| ConfidentialBridge | `0x1C5d960F3757C59BEC347a536F4B811310B6f2aa` |
+| ConfidentialCrossChainERC20 | `0x2C492Fc664e54903A966d5D7f666556FF5BeF9F1` |
+| MOCK_DARK_TOKEN | `0xa2a7bb7fBF67A830B74c3993A76D6d6124175E44` |
+
+**Solana Devnet:**
+| Account | Address |
+|---------|---------|
+| Bridge Program | `EEMKRm1ANMBZHS6yEi67bKVuZDPhztQHVWBzoFnoVbh9` |
+| Bridge Authority PDA | `k9XhdJyuGbmkSePFBzZ7eUjj9EmHANQL9YivYYL53rr` |
+| Example Vault PDA | `Gui8LGdtRwLJL772q1YuVJyRCD8RFbUe6rHiZu6f8Goc` |
+| Inco Lightning | `5sjEbPiqgZrYwR31ahR6Uk9wf5awoX61YGg7jExQSwaj` |
+
+### Key Implementation Details
+
+**Relayer Signing for Inco CPIs:**
+
+The Solana program uses the **relayer** (not a PDA) to sign for Inco Lightning CPIs. This is because Inco Lightning can't validate seeds from other programs:
+
+```rust
+// In relay_receive_confidential():
+// Use relayer as signer for Inco operations (not PDA)
+let signer = ctx.accounts.relayer.to_account_info();
+
+let cpi_ctx = CpiContext::new(inco.clone(), Operation { signer: signer.clone() });
+let amount: Euint128 = new_euint128(cpi_ctx, encrypted_amount, 0)?;
+```
+
+**Handle Conversion (EVM → SVM):**
+
+EVM uses 32-byte `euint256` handles, Solana uses 16-byte `Euint128`. The relayer extracts the last 16 bytes:
+
+```typescript
+// In privacy-relayer-base-to-sol.ts:
+const fullHandle = event.args.encryptedAmountHandle; // 32 bytes
+const encryptedBytes = fullHandle.slice(-32); // Last 16 bytes (reversed for Solana)
+```
+
+**ACL Propagation:**
+
+Before cross-contract calls, the bridge grants ACL access to the target contract:
+
+```solidity
+// In ConfidentialBridge.bridgePrivateToSolana():
+e.allow(amount, localToken); // Allow token contract to access handle
+ICrossChainERC20(localToken).confidentialBurnFromHandle(msg.sender, amount);
+```
 
 ---

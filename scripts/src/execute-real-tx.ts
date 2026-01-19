@@ -21,9 +21,12 @@ import { PublicKey } from "@solana/web3.js";
 
 // Try to import Inco Lightning
 let Lightning: any = null;
+let handleTypes: any = null;
 try {
     const incoLite = await import("@inco/js/lite");
     Lightning = incoLite.Lightning;
+    const incoMain = await import("@inco/js");
+    handleTypes = incoMain.handleTypes;
     console.log("✅ @inco/js/lite loaded successfully");
 } catch (e: any) {
     console.log(`⚠️ @inco/js/lite not available: ${e.message}`);
@@ -37,12 +40,12 @@ if (!EVM_PRIVATE_KEY) {
 
 const evmAccount = privateKeyToAccount(EVM_PRIVATE_KEY as `0x${string}`);
 
-// Deployed addresses
-const CONFIDENTIAL_BRIDGE = "0xaa0d16e19f1f582bd9d7d06a12821007dcac0124" as Address;
-const CONFIDENTIAL_TOKEN = "0xb93f90363244e5b1dc4c9480016bb7a8f3d52cfa" as Address;
+// Deployed addresses (v5 - with setRemoteTokenForDemo)
+const CONFIDENTIAL_BRIDGE = "0x1C5d960F3757C59BEC347a536F4B811310B6f2aa" as Address;
+const CONFIDENTIAL_TOKEN = "0x2C492Fc664e54903A966d5D7f666556FF5BeF9F1" as Address;
 
-// Solana recipient (your wallet)
-const SOLANA_RECIPIENT = new PublicKey("14dJMJ5atWDe2LCKxMnKmC94z7uU1uBtvuhAXhUamP1z");
+// Solana recipient (Solana CLI wallet - has initialized vault)
+const SOLANA_RECIPIENT = new PublicKey("BfxvKDgh3nWpM5JX2NF7M7MJLirJkuWHMM3n5JohStx");
 
 // Amount to bridge
 const AMOUNT_TO_BRIDGE = 10n;
@@ -107,12 +110,14 @@ async function main() {
     if (Lightning) {
         console.log("\n🔐 Encrypting with Inco Lightning...");
         try {
-            const lightning = await Lightning.latest("testnet", 84532);
-            console.log("   Inco network initialized");
+            // Use "devnet" environment (not "testnet") - this is what Inco's nextjs-template uses
+            const lightning = await Lightning.latest("devnet", 84532);
+            console.log("   Inco network initialized (devnet)");
 
             encryptedAmount = await lightning.encrypt(AMOUNT_TO_BRIDGE, {
                 accountAddress: evmAccount.address,
                 dappAddress: CONFIDENTIAL_BRIDGE,
+                handleType: handleTypes.euint256,
             }) as Hex;
 
             console.log(`   ✅ Encrypted! Ciphertext: ${encryptedAmount.slice(0, 50)}...`);
