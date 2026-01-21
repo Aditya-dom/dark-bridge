@@ -675,4 +675,58 @@ pub mod bridge {
     ) -> Result<()> {
         confidential::withdraw_with_attestation(ctx, plaintext_amount, expected_handle)
     }
+
+    // ============================================================================
+    // Privacy Functions (Sender + Receiver Privacy)
+    // ============================================================================
+
+    /// Bridge tokens with FULL PRIVACY using commitment.
+    /// The recipient is hidden behind a commitment hash. Only someone with
+    /// the secret (whose hash matches the commitment) can claim the tokens.
+    ///
+    /// # Arguments
+    /// * `ctx` - The context containing vault accounts
+    /// * `encrypted_amount` - Client-encrypted amount ciphertext
+    /// * `commitment_hash` - keccak256(secret) - recipient must know the secret
+    pub fn bridge_private_with_commitment<'a, 'info>(
+        ctx: Context<'a, '_, '_, 'info, BridgePrivateWithCommitment<'info>>,
+        encrypted_amount: Vec<u8>,
+        commitment_hash: [u8; 32],
+    ) -> Result<()> {
+        confidential::bridge_private_with_commitment(ctx, encrypted_amount, commitment_hash)
+    }
+
+    /// Create a claim for receiver privacy on incoming bridge transfers.
+    /// Instead of minting directly to a recipient, creates a claim that anyone
+    /// with the correct secret can redeem.
+    ///
+    /// # Arguments
+    /// * `ctx` - The context containing bridge authority and claim account
+    /// * `encrypted_amount` - Encrypted amount ciphertext
+    /// * `commitment_hash` - keccak256(secret) for claiming
+    /// * `claim_duration_seconds` - How long the claim is valid
+    /// * `nonce` - Unique nonce for this claim
+    pub fn create_confidential_claim<'a, 'info>(
+        ctx: Context<'a, '_, '_, 'info, CreateConfidentialClaim<'info>>,
+        encrypted_amount: Vec<u8>,
+        commitment_hash: [u8; 32],
+        claim_duration_seconds: i64,
+        nonce: u64,
+    ) -> Result<()> {
+        confidential::create_confidential_claim(ctx, encrypted_amount, commitment_hash, claim_duration_seconds, nonce)
+    }
+
+    /// Redeem a claim using the secret.
+    /// Anyone who knows the secret can claim. The recipient is only revealed
+    /// at claim time, not at bridge time.
+    ///
+    /// # Arguments
+    /// * `ctx` - The context containing claim and recipient vault
+    /// * `secret` - The 32-byte secret whose hash matches the claim's commitment
+    pub fn redeem_confidential_claim<'a, 'info>(
+        ctx: Context<'a, '_, '_, 'info, RedeemConfidentialClaim<'info>>,
+        secret: [u8; 32],
+    ) -> Result<()> {
+        confidential::redeem_confidential_claim(ctx, secret)
+    }
 }

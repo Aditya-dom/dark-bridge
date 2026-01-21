@@ -216,7 +216,8 @@ async function demoEncryption() {
     if (Lightning) {
         try {
             console.log("   Initializing Inco Lightning...");
-            const zap = await Lightning.latest("testnet", 84532);
+            // IMPORTANT: Use 'devnet' to match deployed contracts (0x4732520194584a04Cac0224e067658619F4086bD)
+            const zap = await Lightning.latest("devnet", 84532);
 
             console.log("   Encrypting amount...");
             const ciphertext = await zap.encrypt(amount, {

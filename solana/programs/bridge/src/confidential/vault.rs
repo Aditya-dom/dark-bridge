@@ -82,3 +82,54 @@ impl ConfidentialBridgeMessage {
         1 +  // processed
         1;   // bump
 }
+
+/// Account for privacy-preserving claims (receiver privacy).
+/// 
+/// Instead of minting directly to a recipient, tokens are locked in a claim
+/// that can be redeemed by anyone who knows the secret.
+#[account]
+pub struct ConfidentialClaim {
+    /// Hash of the secret required to claim (keccak256(secret)).
+    pub commitment_hash: [u8; 32],
+
+    /// The SPL token mint for this claim.
+    pub token_mint: Pubkey,
+
+    /// Encrypted amount handle.
+    pub encrypted_amount: Euint128,
+
+    /// Expiration timestamp (Unix seconds).
+    pub expiry: i64,
+
+    /// Whether this claim has been redeemed.
+    pub claimed: bool,
+
+    /// The bridge authority that created this claim.
+    pub bridge_authority: Pubkey,
+
+    /// Bump seed for PDA derivation.
+    pub bump: u8,
+}
+
+impl ConfidentialClaim {
+    /// Seed prefix for PDA derivation.
+    pub const SEED_PREFIX: &'static [u8] = b"conf_claim";
+
+    /// Account size in bytes.
+    pub const SIZE: usize = 8 +  // discriminator
+        32 + // commitment_hash
+        32 + // token_mint
+        16 + // encrypted_amount
+        8 +  // expiry
+        1 +  // claimed
+        32 + // bridge_authority
+        1;   // bump
+
+    /// Derive the claim PDA for a given commitment hash and nonce.
+    pub fn derive_pda(commitment_hash: &[u8; 32], nonce: u64, program_id: &Pubkey) -> (Pubkey, u8) {
+        Pubkey::find_program_address(
+            &[Self::SEED_PREFIX, commitment_hash, &nonce.to_le_bytes()],
+            program_id,
+        )
+    }
+}

@@ -95,7 +95,8 @@ async function main() {
     if (Lightning) {
         console.log(`   Encrypting ${amountToMint} tokens with Inco Lightning...`);
         try {
-            const lightning = await Lightning.latest("testnet", 84532);
+            // IMPORTANT: Use 'devnet' to match deployed contracts (0x4732520194584a04Cac0224e067658619F4086bD)
+            const lightning = await Lightning.latest("devnet", 84532);
             encryptedAmount = await lightning.encrypt(amountToMint, {
                 accountAddress: evmAccount.address,
                 dappAddress: CONFIDENTIAL_TOKEN,

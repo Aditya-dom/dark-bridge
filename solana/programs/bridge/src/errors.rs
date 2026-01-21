@@ -156,4 +156,20 @@ pub enum BridgeError {
 
     #[msg("Missing allowance accounts for grant_handle_access")]
     MissingAllowanceAccounts,
+
+    // Privacy Claim Errors (7100-7199)
+    #[msg("Claim has already been redeemed")]
+    ClaimAlreadyClaimed = 7100,
+
+    #[msg("Claim has expired")]
+    ClaimExpired,
+
+    #[msg("Invalid secret - does not match commitment")]
+    InvalidSecret,
+
+    #[msg("Unauthorized access")]
+    Unauthorized,
+
+    #[msg("Token mint mismatch")]
+    TokenMismatch,
 }

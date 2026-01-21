@@ -41,16 +41,16 @@ const DEPLOY_ENV = "testnet-alpha" as const;
 const config = CONFIGS[DEPLOY_ENV];
 
 // --- Configuration ---
-const EVM_PRIVATE_KEY = process.env.EVM_PRIVATE_KEY;
+const EVM_PRIVATE_KEY = process.env.EVM_PRIVATE_KEY || process.env.PRIVATE_KEY;
 if (!EVM_PRIVATE_KEY) {
-    throw new Error("EVM_PRIVATE_KEY environment variable is required");
+    throw new Error("EVM_PRIVATE_KEY or PRIVATE_KEY environment variable is required");
 }
 
 const evmAccount = privateKeyToAccount(EVM_PRIVATE_KEY as `0x${string}`);
 
-// Deployed addresses (v6 - DARK token with confidentialMintForDemo)
-const CONFIDENTIAL_BRIDGE_ADDRESS = "0xfa1CBa0067D967bbD17eFd2Ab815B92AaB418A7f" as Address;
-const CONFIDENTIAL_TOKEN_ADDRESS = "0xc4104aCBa7059c2f8FEFdf746a1c4b9B8a89Ec7D" as Address;
+// Deployed addresses - cDARK token privacy bridge (tested with test-real-privacy-bridge.ts)
+const CONFIDENTIAL_BRIDGE_ADDRESS = "0x4CDE2466011d1c9600720567e8fb56c418c99e08" as Address;
+const CONFIDENTIAL_TOKEN_ADDRESS = "0x2e631aeb93acf0a00df33ca2b1b6af38be8c4d0b" as Address;
 
 // Bridge Program ID
 const BRIDGE_PROGRAM_ID = new PublicKey("EEMKRm1ANMBZHS6yEi67bKVuZDPhztQHVWBzoFnoVbh9");

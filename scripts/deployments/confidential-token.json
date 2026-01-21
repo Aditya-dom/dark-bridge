@@ -1,0 +1,8 @@
+{
+  "mockErc20": "0xcb5a0ad14bcd6b623b614cbcad21f7bdd9990d32",
+  "confidentialToken": "0x351205163005C8A78AF0f938b170a5C21096641F",
+  "confidentialBridge": "0x4CDE2466011d1c9600720567e8fb56c418c99e08",
+  "deployedAt": "2026-01-19T21:03:16.708Z",
+  "deployer": "0xF8AF04bF0Ac151f2050436603d81Ba20f449028F",
+  "note": "Using pre-deployed ConfidentialCrossChainERC20 implementation"
+}

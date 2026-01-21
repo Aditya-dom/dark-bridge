@@ -7,7 +7,7 @@ extra_output_files = ['abi']
 optimizer = true
 optimizer_runs = 999999
 solc_version = "0.8.28"
-via-ir = false
+via_ir = true
 remappings = ["forge-std/=lib/forge-std/src/", "solady/=lib/solady/src/", "@inco/lightning/=node_modules/@inco/lightning/src/", "@openzeppelin/contracts/=node_modules/@openzeppelin/contracts/", "@openzeppelin/contracts-upgradeable/=node_modules/@openzeppelin/contracts-upgradeable/"]
 gas_limit = "18446744073709551615"
 

@@ -1087,6 +1087,62 @@ Operations:
   5. Emitted handle in ConfidentialBridgeInitiated event
 ```
 
+### Inco SDK Configuration (CRITICAL)
+
+**IMPORTANT**: The `@inco/js` SDK supports multiple "peppers" (deployment environments) with DIFFERENT executor addresses. The Solidity contracts were deployed using the `devnet` pepper, so TypeScript code MUST use `'devnet'` when initializing Lightning:
+
+```typescript
+// ✅ CORRECT - matches deployed contracts
+const zap = await Lightning.latest('devnet', 84532);
+
+// ❌ WRONG - will fail with ExternalHandleDoesNotMatchComputedHandle
+const zap = await Lightning.latest('testnet', 84532);
+```
+
+**Pepper → Executor Address Mapping (Base Sepolia 84532):**
+| Pepper | Executor Address | Status |
+|--------|------------------|--------|
+| **devnet** | `0x4732520194584a04Cac0224e067658619F4086bD` | ✅ Used by deployed contracts |
+| testnet | `0x168FDc3Ae19A5d5b03614578C58974FF30FCBe92` | ❌ Different executor |
+| demonet | `0xA95EAbCE575f5f1e52605358Ee893F6536166378` | ❌ Different executor |
+| alphanet | `0xc0d693DeEF0A91CE39208676b6da09B822abd199` | ❌ Different executor |
+
+The handle computation includes the executor address, so mismatching peppers will cause `ExternalHandleDoesNotMatchComputedHandle` (error `0x5924bb27`).
+
+**Real Inco Encryption Example:**
+```typescript
+import { Lightning } from '@inco/js/lite';
+import { handleTypes } from '@inco/js';
+
+const zap = await Lightning.latest('devnet', 84532); // MUST be 'devnet'
+
+const encryptedAmount = await zap.encrypt(amount, {
+  accountAddress: userAddress.toLowerCase(), // Lowercase!
+  dappAddress: bridgeAddress.toLowerCase(),  // Lowercase!
+  handleType: handleTypes.euint256,
+});
+```
+
+### Successful Transactions (January 20, 2026)
+
+**Direct Privacy Bridge (Real Inco Encryption):**
+```
+TX: 0x78a1620594821fc84d88163d7c3f8762f09deb6700e62da19bbe455a3dc02d2e
+Block: 36566475
+Status: SUCCESS ✅
+Function: bridgePrivateToSolana()
+Encrypted Amount: Real Inco TEE ciphertext (288 bytes)
+```
+
+**Relayer Privacy Bridge (EIP-712 Signed):**
+```
+TX: 0xb184c1ddc3c7714887b594ee09a4dc212a4f7f8bd0f706c2e86f06928957afbb
+Block: 36566491
+Status: SUCCESS ✅
+Function: bridgePrivateViaRelayer()
+Encrypted Amount: Real Inco TEE ciphertext (288 bytes)
+```
+
 **On Solana (SVM):**
 ```
 Inco Lightning Program: 5sjEbPiqgZrYwR31ahR6Uk9wf5awoX61YGg7jExQSwaj

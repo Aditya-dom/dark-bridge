@@ -117,7 +117,8 @@ contract ConfidentialCrossChainERC20 is Initializable {
     constructor(address bridge_) {
         require(bridge_ != address(0), ZeroAddress());
         _BRIDGE = bridge_;
-        _disableInitializers();
+        // Note: _disableInitializers() removed to allow direct deployment
+        // For production, use a factory pattern with clones instead
     }
 
     /// @notice Initializes the token.
@@ -136,6 +137,27 @@ contract ConfidentialCrossChainERC20 is Initializable {
         _decimals = decimals_;
         _name = name_;
         _symbol = symbol_;
+    }
+
+    /// @notice Initializes the token with underlying token for deposits.
+    /// @param remoteToken_ Identifier of the corresponding token on the remote chain.
+    /// @param name_ ERC20 name of the token.
+    /// @param symbol_ ERC20 symbol of the token.
+    /// @param decimals_ ERC20 decimals for the token.
+    /// @param underlyingToken_ The underlying ERC20 token for deposit/withdraw.
+    function initializeWithUnderlying(
+        bytes32 remoteToken_,
+        string memory name_,
+        string memory symbol_,
+        uint8 decimals_,
+        address underlyingToken_
+    ) external initializer {
+        require(remoteToken_ != bytes32(0), ZeroAddress());
+        _remoteToken = remoteToken_;
+        _decimals = decimals_;
+        _name = name_;
+        _symbol = symbol_;
+        _underlyingToken = underlyingToken_;
     }
 
     //////////////////////////////////////////////////////////////
@@ -304,6 +326,35 @@ contract ConfidentialCrossChainERC20 is Initializable {
         e.allow(amount, address(this));
 
         _burnInternal(from, amount);
+    }
+
+    /// @notice Confidentially mint tokens from an existing handle (bridge only).
+    /// @dev Used for claim-based privacy where handle already exists.
+    /// @param to Recipient address.
+    /// @param amount Encrypted amount handle to mint.
+    function confidentialMintFromHandle(
+        address to,
+        euint256 amount
+    ) external payable onlyBridge {
+        require(to != address(0), ZeroAddress());
+        // Verify bridge has access to this handle
+        require(msg.sender.isAllowed(amount), "Unauthorized handle access");
+        e.allow(amount, address(this));
+
+        // Add to balance
+        if (euint256.unwrap(_balances[to]) == bytes32(0)) {
+            _balances[to] = amount;
+        } else {
+            _balances[to] = e.add(_balances[to], amount);
+        }
+        e.allow(_balances[to], address(this));
+        e.allow(_balances[to], to);
+
+        // Update total supply
+        totalSupply = e.add(totalSupply, amount);
+        e.reveal(totalSupply);
+
+        emit ConfidentialMint(to, amount);
     }
 
     /// @notice Internal burn logic shared by both confidentialBurn variants.
