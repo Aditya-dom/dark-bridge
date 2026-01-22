@@ -133,3 +133,61 @@ impl ConfidentialClaim {
         )
     }
 }
+
+/// Account for FULLY PRIVATE claims using Inco TEE (recipient hidden via encrypted pubkey).
+/// 
+/// Unlike ConfidentialClaim which uses commitment hash, this uses Inco TEE to 
+/// store an encrypted recipient pubkey. Only revealed via attested decryption.
+#[account]
+pub struct IncoPrivateClaim {
+    /// The SPL token mint for this claim.
+    pub token_mint: Pubkey,
+
+    /// Encrypted amount handle (Inco TEE).
+    pub encrypted_amount: Euint128,
+
+    /// Encrypted recipient pubkey (32 bytes encrypted via Inco TEE).
+    /// This is an Euint128 pair that encodes a 32-byte pubkey.
+    pub encrypted_recipient_low: Euint128,  // Lower 128 bits
+    pub encrypted_recipient_high: Euint128, // Upper 128 bits
+
+    /// Expiration timestamp (Unix seconds).
+    pub expiry: i64,
+
+    /// Whether this claim has been redeemed.
+    pub claimed: bool,
+
+    /// The bridge authority that created this claim.
+    pub bridge_authority: Pubkey,
+
+    /// Claim nonce for uniqueness.
+    pub nonce: u64,
+
+    /// Bump seed for PDA derivation.
+    pub bump: u8,
+}
+
+impl IncoPrivateClaim {
+    /// Seed prefix for PDA derivation.
+    pub const SEED_PREFIX: &'static [u8] = b"inco_private_claim";
+
+    /// Account size in bytes.
+    pub const SIZE: usize = 8 +  // discriminator
+        32 + // token_mint
+        16 + // encrypted_amount
+        16 + // encrypted_recipient_low
+        16 + // encrypted_recipient_high
+        8 +  // expiry
+        1 +  // claimed
+        32 + // bridge_authority
+        8 +  // nonce
+        1;   // bump
+
+    /// Derive the claim PDA for a given nonce.
+    pub fn derive_pda(nonce: u64, program_id: &Pubkey) -> (Pubkey, u8) {
+        Pubkey::find_program_address(
+            &[Self::SEED_PREFIX, &nonce.to_le_bytes()],
+            program_id,
+        )
+    }
+}

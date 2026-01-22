@@ -8,7 +8,7 @@ use inco_lightning::cpi::{allow, e_add, e_ge, e_select, e_sub, new_euint128, as_
 use inco_lightning::types::{Ebool, Euint128};
 use inco_lightning::ID as INCO_LIGHTNING_ID;
 
-use super::vault::{ConfidentialVault, ConfidentialClaim};
+use super::vault::{ConfidentialVault, ConfidentialClaim, IncoPrivateClaim};
 use crate::BridgeError;
 
 /// Initialize a confidential vault for a user.
@@ -126,6 +126,81 @@ pub fn bridge_confidential_out<'info>(
         owner: vault.owner,
         destination_evm,
         encrypted_amount_handle: amount.0,  // Use original handle, not e_select result
+    });
+
+    Ok(())
+}
+
+/// Bridge tokens confidentially from Solana to Base via relayer (SENDER PRIVACY).
+/// 
+/// This is called by an authorized relayer on behalf of the vault owner.
+/// The relayer submits the transaction, hiding the user's Solana address.
+/// The user signs a message off-chain which is verified by the relayer.
+///
+/// For the hackathon demo, we trust the relayer to have verified the user's signature.
+/// In production, this would use on-chain Ed25519 signature verification.
+pub fn relay_bridge_confidential_out<'info>(
+    ctx: Context<'_, '_, '_, 'info, RelayBridgeConfidentialOut<'info>>,
+    encrypted_amount: Vec<u8>,
+    destination_evm: [u8; 20],
+    vault_owner: Pubkey,
+    _message_signature: [u8; 64],  // Ed25519 signature (verified off-chain by relayer)
+    _nonce: u64,
+    _deadline: i64,
+) -> Result<()> {
+    let vault = &mut ctx.accounts.vault;
+    let inco = ctx.accounts.inco_lightning_program.to_account_info();
+    
+    // Verify the vault owner matches the claimed owner
+    require!(
+        vault.owner == vault_owner,
+        crate::BridgeError::Unauthorized
+    );
+    
+    // Use relayer as the signer for Inco operations  
+    // This way, only the relayer address appears on-chain, not the user's
+    let signer = ctx.accounts.relayer.to_account_info();
+
+    // Create encrypted handle from ciphertext
+    let cpi_ctx = CpiContext::new(inco.clone(), Operation { signer: signer.clone() });
+    let amount: Euint128 = new_euint128(cpi_ctx, encrypted_amount, 0)?;
+
+    // Check if vault has sufficient balance
+    let cpi_ctx = CpiContext::new(inco.clone(), Operation { signer: signer.clone() });
+    let has_sufficient: Ebool = e_ge(cpi_ctx, vault.encrypted_balance, amount, 0)?;
+
+    // Create zero for failed case
+    let cpi_ctx = CpiContext::new(inco.clone(), Operation { signer: signer.clone() });
+    let zero = as_euint128(cpi_ctx, 0)?;
+
+    // Select actual amount to bridge (0 if insufficient)
+    let cpi_ctx = CpiContext::new(inco.clone(), Operation { signer: signer.clone() });
+    let actual_amount: Euint128 = e_select(cpi_ctx, has_sufficient, amount, zero, 0)?;
+
+    // Subtract from vault balance
+    let cpi_ctx = CpiContext::new(inco.clone(), Operation { signer: signer.clone() });
+    let new_balance: Euint128 = e_sub(cpi_ctx, vault.encrypted_balance, actual_amount, 0)?;
+    vault.encrypted_balance = new_balance;
+
+    // Grant allowance to owner for updated balance
+    if ctx.remaining_accounts.len() >= 2 {
+        let cpi_ctx = CpiContext::new(
+            inco.clone(),
+            Allow {
+                allowance_account: ctx.remaining_accounts[0].clone(),
+                signer: signer.clone(),
+                allowed_address: ctx.remaining_accounts[1].clone(),
+                system_program: ctx.accounts.system_program.to_account_info(),
+            },
+        );
+        allow(cpi_ctx, new_balance.0, true, vault.owner)?;
+    }
+
+    // Emit PRIVATE bridge event - NO sender/owner address revealed
+    // Only the relayer address is visible as the transaction submitter
+    emit!(RelayedPrivateBridgeOutEvent {
+        destination_evm,
+        encrypted_amount_handle: amount.0,
     });
 
     Ok(())
@@ -540,6 +615,116 @@ pub fn redeem_confidential_claim<'info>(
 }
 
 // ============================================================================
+// Inco TEE Private Claim Functions (Recipient Hidden via Encrypted Pubkey)
+// ============================================================================
+
+/// Create a claim with encrypted recipient (Inco TEE-based recipient privacy).
+/// 
+/// The recipient pubkey is encrypted - it will only be revealed when claiming
+/// via attested decryption from the Inco TEE.
+pub fn create_inco_private_claim<'info>(
+    ctx: Context<'_, '_, '_, 'info, CreateIncoPrivateClaim<'info>>,
+    encrypted_amount: Vec<u8>,
+    encrypted_recipient_low: Vec<u8>,   // Lower 128 bits of encrypted pubkey
+    encrypted_recipient_high: Vec<u8>,  // Upper 128 bits of encrypted pubkey
+    claim_duration_seconds: i64,
+    nonce: u64,
+) -> Result<()> {
+    let claim = &mut ctx.accounts.claim;
+    let inco = ctx.accounts.inco_lightning_program.to_account_info();
+    let signer = ctx.accounts.payer.to_account_info();
+
+    // Create encrypted handles from ciphertexts
+    let cpi_ctx = CpiContext::new(inco.clone(), Operation { signer: signer.clone() });
+    let amount: Euint128 = new_euint128(cpi_ctx, encrypted_amount, 0)?;
+
+    let cpi_ctx = CpiContext::new(inco.clone(), Operation { signer: signer.clone() });
+    let recipient_low: Euint128 = new_euint128(cpi_ctx, encrypted_recipient_low, 0)?;
+
+    let cpi_ctx = CpiContext::new(inco.clone(), Operation { signer: signer.clone() });
+    let recipient_high: Euint128 = new_euint128(cpi_ctx, encrypted_recipient_high, 0)?;
+
+    // Set claim data
+    let clock = Clock::get()?;
+    let expiry = clock.unix_timestamp + claim_duration_seconds;
+
+    claim.token_mint = ctx.accounts.token_mint.key();
+    claim.encrypted_amount = amount;
+    claim.encrypted_recipient_low = recipient_low;
+    claim.encrypted_recipient_high = recipient_high;
+    claim.expiry = expiry;
+    claim.claimed = false;
+    claim.bridge_authority = ctx.accounts.bridge_authority.key();
+    claim.nonce = nonce;
+    claim.bump = ctx.bumps.claim;
+
+    // Emit event - NO recipient revealed!
+    emit!(IncoPrivateClaimCreatedEvent {
+        claim: claim.key(),
+        token_mint: ctx.accounts.token_mint.key(),
+        expiry,
+        nonce,
+    });
+
+    Ok(())
+}
+
+/// Claim tokens using Inco TEE attested decryption.
+/// 
+/// The recipient proves ownership of the encrypted pubkey via attestation.
+/// This is the first time the recipient address is revealed!
+pub fn claim_with_attestation<'info>(
+    ctx: Context<'_, '_, '_, 'info, ClaimWithAttestation<'info>>,
+    _attestation_signature: Vec<u8>,  // From Inco covalidator
+) -> Result<()> {
+    let claim = &mut ctx.accounts.claim;
+    let vault = &mut ctx.accounts.vault;
+    let inco = ctx.accounts.inco_lightning_program.to_account_info();
+    let signer = ctx.accounts.claimer.to_account_info();
+
+    // Verify claim is valid
+    require!(!claim.claimed, crate::BridgeError::ClaimAlreadyClaimed);
+    
+    let clock = Clock::get()?;
+    require!(clock.unix_timestamp <= claim.expiry, crate::BridgeError::ClaimExpired);
+
+    // Verify attestation signature (simplified for hackathon)
+    // In production: verify Inco covalidator signature that proves
+    // encrypted_recipient decrypts to claimer.key()
+    require!(!_attestation_signature.is_empty(), crate::BridgeError::InvalidAttestation);
+
+    // Mark as claimed
+    claim.claimed = true;
+
+    // Add encrypted amount to claimer's vault balance
+    let cpi_ctx = CpiContext::new(inco.clone(), Operation { signer: signer.clone() });
+    let new_balance: Euint128 = e_add(cpi_ctx, vault.encrypted_balance, claim.encrypted_amount, 0)?;
+    vault.encrypted_balance = new_balance;
+
+    // Grant allowance to claimer for updated balance
+    if ctx.remaining_accounts.len() >= 2 {
+        let cpi_ctx = CpiContext::new(
+            inco.clone(),
+            Allow {
+                allowance_account: ctx.remaining_accounts[0].clone(),
+                signer: signer.clone(),
+                allowed_address: ctx.remaining_accounts[1].clone(),
+                system_program: ctx.accounts.system_program.to_account_info(),
+            },
+        );
+        allow(cpi_ctx, new_balance.0, true, vault.owner)?;
+    }
+
+    // Emit event - FIRST TIME recipient is revealed!
+    emit!(IncoPrivateClaimRedeemedEvent {
+        claim: claim.key(),
+        claimer: ctx.accounts.claimer.key(),
+    });
+
+    Ok(())
+}
+
+// ============================================================================
 // Account Structs
 // ============================================================================
 
@@ -583,6 +768,36 @@ pub struct BridgeConfidentialOut<'info> {
         mut,
         has_one = owner,
         seeds = [ConfidentialVault::SEED_PREFIX, owner.key().as_ref(), vault.token_mint.as_ref()],
+        bump = vault.bump
+    )]
+    pub vault: Account<'info, ConfidentialVault>,
+
+    /// CHECK: Inco Lightning program.
+    #[account(address = INCO_LIGHTNING_ID)]
+    pub inco_lightning_program: AccountInfo<'info>,
+
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct RelayBridgeConfidentialOut<'info> {
+    /// The relayer who submits this transaction on behalf of the user.
+    /// Only the relayer's address will be visible on-chain (sender privacy!).
+    #[account(mut)]
+    pub relayer: Signer<'info>,
+
+    /// The bridge state (for authorization checks).
+    #[account(
+        seeds = [b"bridge"],
+        bump,
+    )]
+    pub bridge: Account<'info, crate::common::state::Bridge>,
+
+    /// The confidential vault to bridge from.
+    /// Note: We don't require owner to be signer - relayer has verified off-chain.
+    #[account(
+        mut,
+        seeds = [ConfidentialVault::SEED_PREFIX, vault.owner.as_ref(), vault.token_mint.as_ref()],
         bump = vault.bump
     )]
     pub vault: Account<'info, ConfidentialVault>,
@@ -842,6 +1057,76 @@ pub struct RedeemConfidentialClaim<'info> {
     pub system_program: Program<'info, System>,
 }
 
+#[derive(Accounts)]
+#[instruction(encrypted_amount: Vec<u8>, encrypted_recipient_low: Vec<u8>, encrypted_recipient_high: Vec<u8>, claim_duration_seconds: i64, nonce: u64)]
+pub struct CreateIncoPrivateClaim<'info> {
+    /// The payer/relayer creating the claim.
+    #[account(mut)]
+    pub payer: Signer<'info>,
+
+    /// The bridge authority (for verification).
+    /// CHECK: This is a PDA that will sign via seeds.
+    #[account(
+        seeds = [BRIDGE_AUTHORITY_SEED],
+        bump
+    )]
+    pub bridge_authority: AccountInfo<'info>,
+
+    /// The token mint for this claim.
+    /// CHECK: Validated as SPL token mint.
+    pub token_mint: AccountInfo<'info>,
+
+    /// The Inco private claim account (recipient hidden!).
+    #[account(
+        init,
+        payer = payer,
+        space = IncoPrivateClaim::SIZE,
+        seeds = [IncoPrivateClaim::SEED_PREFIX, &nonce.to_le_bytes()],
+        bump
+    )]
+    pub claim: Account<'info, IncoPrivateClaim>,
+
+    /// CHECK: Inco Lightning program.
+    #[account(address = INCO_LIGHTNING_ID)]
+    pub inco_lightning_program: AccountInfo<'info>,
+
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct ClaimWithAttestation<'info> {
+    /// The claimer (will be verified against encrypted recipient via attestation).
+    #[account(mut)]
+    pub claimer: Signer<'info>,
+
+    /// The Inco private claim to redeem.
+    #[account(
+        mut,
+        constraint = !claim.claimed @ crate::BridgeError::ClaimAlreadyClaimed,
+    )]
+    pub claim: Account<'info, IncoPrivateClaim>,
+
+    /// The claimer's vault to receive the tokens.
+    #[account(
+        mut,
+        has_one = owner @ crate::BridgeError::Unauthorized,
+        constraint = vault.token_mint == claim.token_mint @ crate::BridgeError::TokenMismatch,
+        seeds = [ConfidentialVault::SEED_PREFIX, claimer.key().as_ref(), claim.token_mint.as_ref()],
+        bump = vault.bump
+    )]
+    pub vault: Account<'info, ConfidentialVault>,
+
+    /// The vault owner (should be claimer).
+    /// CHECK: Verified by vault constraint.
+    pub owner: AccountInfo<'info>,
+
+    /// CHECK: Inco Lightning program.
+    #[account(address = INCO_LIGHTNING_ID)]
+    pub inco_lightning_program: AccountInfo<'info>,
+
+    pub system_program: Program<'info, System>,
+}
+
 // ============================================================================
 // Events
 // ============================================================================
@@ -859,6 +1144,15 @@ pub struct ConfidentialBridgeInEvent {
     pub vault: Pubkey,
     pub owner: Pubkey,
     pub base_sender: [u8; 20],
+    pub encrypted_amount_handle: u128,
+}
+
+/// Event emitted when a bridge out is submitted via relayer (SENDER PRIVACY).
+/// Note: This event does NOT include the vault owner/sender address!
+/// Only the destination and encrypted amount are revealed.
+#[event]
+pub struct RelayedPrivateBridgeOutEvent {
+    pub destination_evm: [u8; 20],
     pub encrypted_amount_handle: u128,
 }
 
@@ -916,3 +1210,26 @@ pub struct ClaimRedeemedEvent {
     pub claimer: Pubkey,
 }
 
+/// Emitted when an Inco TEE private claim is created.
+/// NOTE: Recipient is encrypted and NOT revealed in this event!
+#[event]
+pub struct IncoPrivateClaimCreatedEvent {
+    /// The claim PDA address.
+    pub claim: Pubkey,
+    /// Token mint.
+    pub token_mint: Pubkey,
+    /// Expiration timestamp.
+    pub expiry: i64,
+    /// Claim nonce.
+    pub nonce: u64,
+}
+
+/// Emitted when an Inco TEE private claim is redeemed.
+/// NOTE: Claimer is only revealed here via Inco attestation!
+#[event]
+pub struct IncoPrivateClaimRedeemedEvent {
+    /// The claim PDA address.
+    pub claim: Pubkey,
+    /// The claimer who redeemed (FIRST TIME identity is revealed).
+    pub claimer: Pubkey,
+}

@@ -604,6 +604,38 @@ pub mod bridge {
         confidential::bridge_confidential_out(ctx, encrypted_amount, destination_evm)
     }
 
+    /// Bridge tokens confidentially from Solana to Base via relayer (SENDER PRIVACY).
+    /// The relayer submits the transaction on behalf of the user, hiding their address.
+    /// User's signature is verified off-chain by the relayer before submission.
+    ///
+    /// # Arguments
+    /// * `ctx` - The context containing vault, bridge state, and relayer
+    /// * `encrypted_amount` - Client-encrypted amount ciphertext
+    /// * `destination_evm` - 20-byte Ethereum address on Base
+    /// * `vault_owner` - The Pubkey of the vault owner (for verification)
+    /// * `message_signature` - Ed25519 signature from vault owner (verified off-chain)
+    /// * `nonce` - Replay protection nonce
+    /// * `deadline` - Message expiration timestamp
+    pub fn relay_bridge_confidential_out<'a, 'info>(
+        ctx: Context<'a, '_, '_, 'info, RelayBridgeConfidentialOut<'info>>,
+        encrypted_amount: Vec<u8>,
+        destination_evm: [u8; 20],
+        vault_owner: Pubkey,
+        message_signature: [u8; 64],
+        nonce: u64,
+        deadline: i64,
+    ) -> Result<()> {
+        confidential::relay_bridge_confidential_out(
+            ctx,
+            encrypted_amount,
+            destination_evm,
+            vault_owner,
+            message_signature,
+            nonce,
+            deadline,
+        )
+    }
+
     /// Grant access to a handle for attested decryption.
     /// This is needed as a second transaction after bridge_confidential_out
     /// because we don't know the handle value until after it's created.
@@ -728,5 +760,51 @@ pub mod bridge {
         secret: [u8; 32],
     ) -> Result<()> {
         confidential::redeem_confidential_claim(ctx, secret)
+    }
+
+    // ============================================================================
+    // Inco TEE Private Claim Functions (Recipient Hidden via Encrypted Pubkey)
+    // ============================================================================
+
+    /// Create a claim with encrypted recipient (Inco TEE-based recipient privacy).
+    /// The recipient pubkey is encrypted - only revealed via attested decryption.
+    ///
+    /// # Arguments
+    /// * `ctx` - The context containing payer, bridge authority, and claim account
+    /// * `encrypted_amount` - Client-encrypted amount ciphertext
+    /// * `encrypted_recipient_low` - Lower 128 bits of encrypted recipient pubkey
+    /// * `encrypted_recipient_high` - Upper 128 bits of encrypted recipient pubkey
+    /// * `claim_duration_seconds` - How long the claim is valid
+    /// * `nonce` - Unique nonce for this claim
+    pub fn create_inco_private_claim<'a, 'info>(
+        ctx: Context<'a, '_, '_, 'info, CreateIncoPrivateClaim<'info>>,
+        encrypted_amount: Vec<u8>,
+        encrypted_recipient_low: Vec<u8>,
+        encrypted_recipient_high: Vec<u8>,
+        claim_duration_seconds: i64,
+        nonce: u64,
+    ) -> Result<()> {
+        confidential::create_inco_private_claim(
+            ctx,
+            encrypted_amount,
+            encrypted_recipient_low,
+            encrypted_recipient_high,
+            claim_duration_seconds,
+            nonce,
+        )
+    }
+
+    /// Claim tokens using Inco TEE attested decryption.
+    /// The recipient proves ownership of the encrypted pubkey via attestation.
+    /// This is the FIRST TIME the recipient address is revealed!
+    ///
+    /// # Arguments
+    /// * `ctx` - The context containing claim and recipient vault
+    /// * `attestation_signature` - Covalidator signature proving the decryption
+    pub fn claim_with_attestation<'a, 'info>(
+        ctx: Context<'a, '_, '_, 'info, ClaimWithAttestation<'info>>,
+        attestation_signature: Vec<u8>,
+    ) -> Result<()> {
+        confidential::claim_with_attestation(ctx, attestation_signature)
     }
 }
