@@ -61,8 +61,8 @@ if (!EVM_PRIVATE_KEY) {
 const evmAccount = privateKeyToAccount(EVM_PRIVATE_KEY as `0x${string}`);
 
 // Deployed addresses (updated - correct deployment)
-const CONFIDENTIAL_BRIDGE_ADDRESS = "0x9f5d41cfA886DD11857Bd4E4AebB07A8200012f5" as Address;
-const CONFIDENTIAL_TOKEN_ADDRESS = "0xE7f80ecDAeD85e99535aDcC922B4B62Eaa5b88ca" as Address;
+const CONFIDENTIAL_BRIDGE_ADDRESS = "0x73055cefc13AdD067D76d6390F08E9B6Cb5f2FdF" as Address;
+const CONFIDENTIAL_TOKEN_ADDRESS = "0xb605C1C8A1D8fA69bcE0F591952F21bB7ddb084A" as Address;
 
 // Bridge Program ID
 const BRIDGE_PROGRAM_ID = new PublicKey("EEMKRm1ANMBZHS6yEi67bKVuZDPhztQHVWBzoFnoVbh9");

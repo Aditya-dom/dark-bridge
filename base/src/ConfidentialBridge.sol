@@ -538,6 +538,11 @@ contract ConfidentialBridge is ReentrancyGuardTransient, OwnableRoles, Initializ
         e.allow(amount, address(this));
         e.allow(recipient, address(this));
         
+        // IMPORTANT: Allow the USER who created the claim to view their encrypted data
+        // This enables attestedDecrypt() so user can verify and claim with signature
+        e.allow(amount, msg.sender);
+        e.allow(recipient, msg.sender);
+        
         privateClaims[claimId] = PrivateClaim({
             localToken: localToken,
             encryptedAmount: amount,

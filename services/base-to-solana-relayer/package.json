@@ -1,0 +1,19 @@
+{
+    "name": "base-to-solana-relayer",
+    "version": "1.0.0",
+    "private": true,
+    "type": "module",
+    "scripts": {
+        "start": "bun run src/index.ts",
+        "dev": "bun run --watch src/index.ts"
+    },
+    "dependencies": {
+        "@inco/js": "0.8.0-devnet-3",
+        "@solana/web3.js": "^1.95.8",
+        "viem": "^2.38.0"
+    },
+    "devDependencies": {
+        "@types/bun": "^1.1.16",
+        "typescript": "^5"
+    }
+}
