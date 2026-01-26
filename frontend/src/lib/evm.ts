@@ -1,4 +1,4 @@
-import { http, createConfig } from "wagmi";
+import { http, createConfig, createStorage, cookieStorage } from "wagmi";
 import { baseSepolia } from "wagmi/chains";
 import { injected, coinbaseWallet } from "wagmi/connectors";
 
@@ -11,4 +11,8 @@ export const wagmiConfig = createConfig({
     transports: {
         [baseSepolia.id]: http("https://sepolia.base.org"),
     },
+    ssr: true,
+    storage: createStorage({
+        storage: cookieStorage,
+    }),
 });
