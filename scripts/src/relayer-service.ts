@@ -47,7 +47,7 @@ if (!EVM_PRIVATE_KEY) {
 const relayerAccount = privateKeyToAccount(EVM_PRIVATE_KEY as `0x${string}`);
 
 // Deployed contracts
-const CONFIDENTIAL_BRIDGE = "0x4CDE2466011d1c9600720567e8fb56c418c99e08" as Address;
+const CONFIDENTIAL_BRIDGE = "0x6f7c0515daF8459c0eBf35DB0411fC665fEf838a" as Address;
 
 // --- Clients ---
 const publicClient = createPublicClient({

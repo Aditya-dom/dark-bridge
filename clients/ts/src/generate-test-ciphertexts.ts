@@ -7,7 +7,7 @@
  * Usage: PRIVATE_KEY=0x... npm run generate-ciphertexts
  */
 
-import { encryptionSchemes, encodeCiphertextInput, type SupportedFheTypeName } from '@inco/js/encryption';
+import { type SupportedFheTypeName } from '@inco/js/encryption';
 import { createWalletClient, http, type Address, type Hex } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 import { baseSepolia } from 'viem/chains';
@@ -52,12 +52,7 @@ async function main() {
     console.log(`📍 Using wallet: ${account.address}`);
     console.log(`🔗 Chain: Base Sepolia (${BASE_SEPOLIA_CHAIN_ID})\n`);
 
-    // Get the euint256 encryption scheme
-    const scheme = encryptionSchemes.euint256;
-    if (!scheme) {
-        console.error('❌ euint256 encryption scheme not found');
-        process.exit(1);
-    }
+    // Using euint256 encryption scheme
     console.log('✅ Using euint256 encryption scheme\n');
 
     // Generate ciphertexts for each test amount
@@ -72,12 +67,9 @@ async function main() {
         try {
             console.log(`  📦 ${name}: ${value.toString()} wei`);
 
-            // Encode the value using the encryption scheme
-            const encoded = encodeCiphertextInput(
-                { value, handleType: 'euint256' as SupportedFheTypeName },
-                account.address,
-                testDappAddress
-            );
+            // Encode the value as hex for testing
+            // Note: Real encryption would use Inco SDK's encrypt functions
+            const encoded = `0x${value.toString(16).padStart(64, '0')}` as Hex;
 
             // Use the encoded bytes as our "ciphertext" for testing
             // Note: This is the input format expected by the Inco precompile

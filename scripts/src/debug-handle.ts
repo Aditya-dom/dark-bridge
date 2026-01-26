@@ -26,7 +26,7 @@ async function main() {
   console.log(`  Executor Address: ${zap.executorAddress}`);
   
   const userAddress = account.address.toLowerCase() as `0x${string}`;
-  const dappAddress = '0x4cde2466011d1c9600720567e8fb56c418c99e08' as `0x${string}`;
+  const dappAddress = '0x6f7c0515daF8459c0eBf35DB0411fC665fEf838a' as `0x${string}`;
   const amount = parseEther('5');
   
   console.log('\nTest Parameters:');

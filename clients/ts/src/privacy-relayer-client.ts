@@ -206,7 +206,10 @@ export class PrivacyRelayerClient {
         };
 
         // Sign the typed data
-        const signature = await walletClient.signTypedData(typedData);
+        const signature = await walletClient.signTypedData({
+            ...typedData,
+            account: walletClient.account!,
+        });
 
         return {
             localToken: this.config.confidentialTokenAddress,
@@ -324,12 +327,14 @@ export class PrivacyRelayerClient {
         // Get Inco fee for the mint operation
         const incoFee = await this.getIncoFee();
 
-        const txHash = await walletClient.writeContract({
+        const txHash = await (walletClient as any).writeContract({
             address: this.config.confidentialBridgeAddress,
             abi: REDEEM_CLAIM_ABI,
             functionName: 'redeemClaim',
             args: [claimId, secret],
             value: incoFee,
+            chain: baseSepolia,
+            account: walletClient.account,
         });
 
         return txHash;

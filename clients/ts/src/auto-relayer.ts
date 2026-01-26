@@ -223,7 +223,7 @@ async function processOutgoingMessage(
                 }]
             );
         } else {
-            console.log(`   ⚠️ Unsupported message type: ${msg.__kind}`);
+            console.log(`   ⚠️ Unsupported message type: ${(msg as any).__kind}`);
             return false;
         }
 
@@ -286,6 +286,8 @@ async function processOutgoingMessage(
             abi: BRIDGE_VALIDATOR_ABI,
             functionName: 'registerMessages',
             args: [signedMessages, signature],
+            chain: baseSepolia,
+            account,
         });
 
         await publicClient.waitForTransactionReceipt({ hash: registerTx });
@@ -327,6 +329,8 @@ async function processOutgoingMessage(
                     abi: BRIDGE_ABI,
                     functionName: 'relayMessages',
                     args: [[evmMessage]],
+                    chain: baseSepolia,
+                    account,
                 });
 
                 await publicClient.waitForTransactionReceipt({ hash: relayTx });
@@ -388,7 +392,7 @@ async function main() {
         try {
             // Fetch bridge state to get message count
             const bridge = await fetchBridge(solRpc, CONFIG.solanaBridgeAccount as SolAddress);
-            const currentMessageCount = Number(bridge.data.outgoingMsgCount);
+            const currentMessageCount = Number(bridge.data.nonce);
 
             if (currentMessageCount > lastMessageCount) {
                 console.log(`📬 New messages detected! Count: ${lastMessageCount} -> ${currentMessageCount}`);
@@ -427,7 +431,7 @@ export async function relayMessage(outgoingPubkey: string) {
         transport: http('https://sepolia.base.org'),
     });
 
-    return processOutgoingMessage(outgoingPubkey, solRpc, publicClient, walletClient, account);
+    return processOutgoingMessage(outgoingPubkey, solRpc, publicClient as any, walletClient, account);
 }
 
 // Run if called directly
