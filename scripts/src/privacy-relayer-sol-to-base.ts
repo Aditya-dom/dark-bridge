@@ -75,6 +75,21 @@ const keypairPath = path.join(process.env.HOME || "", ".config/solana/id.json");
 const keypairData = JSON.parse(fs.readFileSync(keypairPath, "utf-8"));
 const solanaWallet = Keypair.fromSecretKey(new Uint8Array(keypairData));
 
+// Optional: Load a separate keypair for decryption (the vault owner's keypair)
+// This allows the relayer to decrypt handles owned by a different wallet
+let decryptionWallet = solanaWallet;
+if (process.env.SOLANA_DECRYPT_KEYPAIR) {
+    try {
+        const decryptKeypairPath = process.env.SOLANA_DECRYPT_KEYPAIR;
+        const decryptKeypairData = JSON.parse(fs.readFileSync(decryptKeypairPath, "utf-8"));
+        decryptionWallet = Keypair.fromSecretKey(new Uint8Array(decryptKeypairData));
+        console.log(`\n🔑 Using custom decryption keypair: ${decryptionWallet.publicKey.toBase58()}`);
+    } catch (e: any) {
+        console.log(`⚠️ Failed to load SOLANA_DECRYPT_KEYPAIR, using default: ${e.message}`);
+    }
+}
+
+
 // --- Viem Clients ---
 const basePublicClient = createPublicClient({
     chain: baseSepolia,
@@ -414,6 +429,7 @@ function deriveAllowancePDA(handle: bigint, allowedAddress: PublicKey): [PublicK
  */
 async function grantHandleAccess(handle: bigint, owner: PublicKey): Promise<string> {
     console.log(`   📝 Granting handle access for: ${handle}`);
+    console.log(`      Using decryption wallet: ${decryptionWallet.publicKey.toBase58()}`);
 
     const connection = new Connection(config.solana.rpcUrl, "confirmed");
 
@@ -426,8 +442,9 @@ async function grantHandleAccess(handle: bigint, owner: PublicKey): Promise<stri
     const handleBuffer = handleToBuffer(handle);
     const instructionData = Buffer.concat([discriminator, handleBuffer]);
 
+    // Use decryptionWallet as the signer (it's the owner)
     const accounts = [
-        { pubkey: owner, isSigner: true, isWritable: true },
+        { pubkey: decryptionWallet.publicKey, isSigner: true, isWritable: true },
         { pubkey: INCO_LIGHTNING_ID, isSigner: false, isWritable: false },
         { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
         { pubkey: allowancePDA, isSigner: false, isWritable: true },
@@ -442,9 +459,9 @@ async function grantHandleAccess(handle: bigint, owner: PublicKey): Promise<stri
 
     const tx = new Transaction().add(instruction);
     tx.recentBlockhash = (await connection.getLatestBlockhash()).blockhash;
-    tx.feePayer = owner;
+    tx.feePayer = decryptionWallet.publicKey;
 
-    const sig = await sendAndConfirmTransaction(connection, tx, [solanaWallet], {
+    const sig = await sendAndConfirmTransaction(connection, tx, [decryptionWallet], {
         commitment: "confirmed",
     });
 
@@ -460,22 +477,24 @@ async function decryptWithOfficialSDK(handle: bigint): Promise<bigint | null> {
         const { decrypt } = await import("@inco/solana-sdk/attested-decrypt");
         const nacl = await import("tweetnacl");
 
+        // Use decryptionWallet (which may be different from solanaWallet if SOLANA_DECRYPT_KEYPAIR is set)
         const walletAdapter = {
-            publicKey: solanaWallet.publicKey,
+            publicKey: decryptionWallet.publicKey,
             signMessage: async (message: Uint8Array): Promise<Uint8Array> => {
-                return nacl.sign.detached(message, solanaWallet.secretKey);
+                return nacl.sign.detached(message, decryptionWallet.secretKey);
             },
         };
 
         console.log(`   🔓 Decrypting handle with official SDK...`);
+        console.log(`      Decryption wallet: ${decryptionWallet.publicKey.toBase58()}`);
 
         const result = await decrypt([handle.toString()], {
-            address: solanaWallet.publicKey,
+            address: decryptionWallet.publicKey,
             signMessage: walletAdapter.signMessage,
         });
 
         if (result.plaintexts && result.plaintexts.length > 0) {
-            const plaintext = BigInt(result.plaintexts[0]);
+            const plaintext = BigInt(result.plaintexts[0] ?? "0");
             console.log(`      ✅ Decrypted: ${plaintext} tokens`);
             return plaintext;
         }
@@ -564,37 +583,48 @@ async function relayConfidentialToBase(txSignature: string): Promise<boolean> {
         let amountToMint: bigint;
 
         // For sender-private events, we can't grant handle access (no owner known)
-        // For regular events, try to decrypt if we're the owner
-        const isOwner = ownerPubkey ? ownerPubkey.equals(solanaWallet.publicKey) : false;
+        // For regular events, try to decrypt if the decryptionWallet matches the vault owner
+        const isOwner = ownerPubkey ? ownerPubkey.equals(decryptionWallet.publicKey) : false;
 
         if (isSenderPrivate) {
             // Sender-private mode: can't decrypt, use demo fallback
             console.log(`   🔒 Sender-private event: using demo amount (5 tokens)`);
             amountToMint = BigInt(5);
-        } else if (isOwner && ownerPubkey) {
+        } else {
+            // Try to decrypt the handle - the owner granted access when bridging
+            // Even if we're not the owner, we can try the simple decrypt API
+            // as the handle was allowed for attested decrypt by the bridge program
             try {
-                // Step 1: Grant handle access
-                await grantHandleAccess(encryptedAmountHandle, ownerPubkey);
+                console.log(`   🔓 Attempting to decrypt handle...`);
 
-                // Step 2: Decrypt with official SDK
-                const plaintext = await decryptWithOfficialSDK(encryptedAmountHandle);
+                // First try simple decrypt (for handles with public allow)
+                const simpleResult = await requestAttestedDecryptSimple(encryptedAmountHandle);
 
-                if (plaintext !== null && plaintext > 0n) {
-                    console.log(`   ✅ Real amount decrypted: ${plaintext} tokens`);
-                    amountToMint = plaintext;
+                if (simpleResult !== null && simpleResult.plaintext > 0n) {
+                    console.log(`   ✅ Real amount decrypted: ${simpleResult.plaintext} tokens`);
+                    amountToMint = simpleResult.plaintext;
+                } else if (isOwner && ownerPubkey) {
+                    // If simple decrypt failed and we are the owner, try the official SDK
+                    console.log(`   📝 Simple decrypt failed, trying with owner signature...`);
+                    await grantHandleAccess(encryptedAmountHandle, ownerPubkey);
+                    const plaintext = await decryptWithOfficialSDK(encryptedAmountHandle);
+
+                    if (plaintext !== null && plaintext > 0n) {
+                        console.log(`   ✅ Real amount decrypted via SDK: ${plaintext} tokens`);
+                        amountToMint = plaintext;
+                    } else {
+                        console.log(`   ⚠️ Decrypt returned 0, using demo fallback`);
+                        amountToMint = BigInt(5);
+                    }
                 } else {
-                    console.log(`   ⚠️ Decrypt returned 0, using demo fallback`);
+                    console.log(`   ⚠️ Decrypt not available, using demo fallback`);
                     amountToMint = BigInt(5);
                 }
             } catch (e: any) {
-                console.log(`   ⚠️ Grant/decrypt failed: ${e.message}`);
+                console.log(`   ⚠️ Decrypt failed: ${e.message}`);
                 console.log(`   Using demo fallback amount`);
                 amountToMint = BigInt(5);
             }
-        } else {
-            // Not the owner, can only use demo mode
-            console.log(`   ⚠️ Not the owner, using demo amount`);
-            amountToMint = BigInt(5);
         }
 
         console.log(`   Amount to mint: ${amountToMint} tokens`);
