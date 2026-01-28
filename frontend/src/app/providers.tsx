@@ -1,34 +1,14 @@
 "use client";
 
-import { WagmiProvider } from "wagmi";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { wagmiConfig } from "@/lib/evm";
-import { useState, useMemo } from "react";
-import { ConnectionProvider, WalletProvider } from "@solana/wallet-adapter-react";
-import { WalletModalProvider } from "@solana/wallet-adapter-react-ui";
-import { SOLANA_RPC_URL } from "@/lib/constants";
+import dynamic from "next/dynamic";
+import React from "react";
 
-// Required CSS for wallet adapter modal
-import "@solana/wallet-adapter-react-ui/styles.css";
+// Dynamically import providers to avoid SSR issues with RainbowKit's localStorage usage
+const ProvidersInner = dynamic(
+    () => import("@/app/providers-inner").then((mod) => mod.ProvidersInner),
+    { ssr: false }
+) as React.ComponentType<{ children: React.ReactNode }>;
 
 export function Providers({ children }: { children: React.ReactNode }) {
-    const [queryClient] = useState(() => new QueryClient());
-
-    // Solana wallets - use empty array to rely on wallet-standard auto-detection
-    // This avoids pulling in problematic WalletConnect dependencies
-    const wallets = useMemo(() => [], []);
-
-    return (
-        <ConnectionProvider endpoint={SOLANA_RPC_URL}>
-            <WalletProvider wallets={wallets} autoConnect>
-                <WalletModalProvider>
-                    <WagmiProvider config={wagmiConfig}>
-                        <QueryClientProvider client={queryClient}>
-                            {children}
-                        </QueryClientProvider>
-                    </WagmiProvider>
-                </WalletModalProvider>
-            </WalletProvider>
-        </ConnectionProvider>
-    );
+    return <ProvidersInner>{children}</ProvidersInner>;
 }

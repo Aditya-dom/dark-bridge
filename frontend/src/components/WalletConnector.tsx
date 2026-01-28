@@ -1,44 +1,18 @@
 "use client";
 
-import { useAccount, useConnect, useDisconnect } from "wagmi";
-import { useWallet } from "@solana/wallet-adapter-react";
+import { ConnectButton } from "@rainbow-me/rainbowkit";
 import { WalletMultiButton } from "@solana/wallet-adapter-react-ui";
 
 export function WalletConnector() {
-    const { address, isConnected } = useAccount();
-    const { connect, connectors } = useConnect();
-    const { disconnect } = useDisconnect();
-    const { publicKey: solanaPublicKey, connected: isSolanaConnected } = useWallet();
-
     return (
-        <div className="flex flex-col gap-2">
-            {/* EVM Wallet */}
-            <div className="flex items-center gap-2">
-                {isConnected && address ? (
-                    <div className="flex items-center gap-2">
-                        <span className="text-xs text-neutral-400">
-                            EVM: {address.slice(0, 6)}...{address.slice(-4)}
-                        </span>
-                        <button
-                            onClick={() => disconnect()}
-                            className="px-2 py-1 text-xs bg-neutral-800 hover:bg-neutral-700 rounded transition-colors"
-                        >
-                            ×
-                        </button>
-                    </div>
-                ) : (
-                    <div className="flex gap-1">
-                        {connectors.slice(0, 1).map((connector) => (
-                            <button
-                                key={connector.uid}
-                                onClick={() => connect({ connector })}
-                                className="px-3 py-1.5 text-xs bg-blue-600 hover:bg-blue-500 rounded font-medium transition-colors"
-                            >
-                                Connect EVM
-                            </button>
-                        ))}
-                    </div>
-                )}
+        <div className="flex flex-col gap-3">
+            {/* EVM Wallet - RainbowKit */}
+            <div className="evm-wallet-container">
+                <ConnectButton
+                    accountStatus="address"
+                    chainStatus="icon"
+                    showBalance={false}
+                />
             </div>
 
             {/* Solana Wallet */}

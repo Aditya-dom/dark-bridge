@@ -209,7 +209,7 @@ export async function getVaultBalance(
 }
 
 /**
- * Build the bridge_confidential_out instruction for Solana → Base transfer
+ * Build the bridge_confidential_out_plaintext instruction for Solana → Base transfer
  */
 export function buildBridgeConfidentialOutInstruction(
     owner: PublicKey,
@@ -219,11 +219,8 @@ export function buildBridgeConfidentialOutInstruction(
 ): TransactionInstruction {
     const [vaultPda] = deriveVaultPda(owner, tokenMint);
 
-    // Anchor discriminator for "bridge_confidential_out"
-    const discriminator = computeDiscriminator("bridge_confidential_out");
-
-    // Create encrypted amount (16 bytes for u128)
-    const encryptedAmount = createEncryptedAmount(amount);
+    // Anchor discriminator for "bridge_confidential_out_plaintext"
+    const discriminator = computeDiscriminator("bridge_confidential_out_plaintext");
 
     // Convert EVM address to bytes (remove 0x prefix)
     const evmAddressClean = destinationEvmAddress.startsWith("0x")
@@ -231,19 +228,22 @@ export function buildBridgeConfidentialOutInstruction(
         : destinationEvmAddress;
     const destinationBytes = Buffer.from(evmAddressClean, "hex");
 
-    // Instruction data: discriminator + encrypted_amount (Vec<u8>) + destination_evm ([u8; 20])
-    // Vec<u8> is encoded as: 4-byte length (little-endian) + bytes
-    const encryptedAmountLen = Buffer.alloc(4);
-    encryptedAmountLen.writeUInt32LE(encryptedAmount.length, 0);
+    // Instruction data: discriminator + plaintext_amount (u128, 16 bytes LE) + destination_evm ([u8; 20])
+    const amountBuffer = Buffer.alloc(16);
+    // Write u128 as little-endian
+    let remaining = amount;
+    for (let i = 0; i < 16; i++) {
+        amountBuffer[i] = Number(remaining & BigInt(0xff));
+        remaining >>= BigInt(8);
+    }
 
     const instructionData = Buffer.concat([
         discriminator,
-        encryptedAmountLen,
-        encryptedAmount,
+        amountBuffer,
         destinationBytes,
     ]);
 
-    // Accounts for bridge_confidential_out:
+    // Accounts for bridge_confidential_out_plaintext:
     // 1. owner (signer, mut)
     // 2. vault (mut)
     // 3. inco_lightning_program

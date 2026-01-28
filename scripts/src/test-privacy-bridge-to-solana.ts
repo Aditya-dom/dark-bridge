@@ -42,9 +42,9 @@ import { handleTypes } from '@inco/js';
 // Configuration
 const CONFIG = {
   rpcUrl: 'https://sepolia.base.org',
-  confidentialBridge: '0x6f7c0515daF8459c0eBf35DB0411fC665fEf838a' as `0x${string}`,
+  confidentialBridge: '0x4CDE2466011d1c9600720567e8fb56c418c99e08' as `0x${string}`,
   darkToken: '0xcb5a0ad14bcd6b623b614cbcad21f7bdd9990d32' as `0x${string}`,
-  cDarkToken: '0x06eb490068dFdc3b071A89381e06032B9E657906' as `0x${string}`,
+  cDarkToken: '0x2e631aeb93acf0a00df33ca2b1b6af38be8c4d0b' as `0x${string}`,
   relayerUrl: 'http://localhost:3001',
   // Solana addresses
   solanaProgram: 'EEMKRm1ANMBZHS6yEi67bKVuZDPhztQHVWBzoFnoVbh9',
@@ -122,8 +122,8 @@ async function main() {
   });
 
   // Generate a test Solana recipient address
-  // Using your actual Solana wallet address
-  const solanaRecipient = new PublicKey('BfxvKDgh3nWpM5JX2NF7M7MJLirJkuWHMM3n5JohStx');
+  // In production, this would come from the user
+  const solanaRecipient = new PublicKey('DYw8jCTfBox68YyWqALYpqKPzWdT7rBHNqYwF6J3YzKE');
   const toSolana = solanaAddressToBytes32(solanaRecipient);
 
   console.log(`📍 Sender (Base):     ${account.address}`);
