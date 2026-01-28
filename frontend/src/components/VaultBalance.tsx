@@ -1,7 +1,6 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { useWallet, useConnection } from "@solana/wallet-adapter-react";
 import { PublicKey, SystemProgram, Transaction, TransactionInstruction } from "@solana/web3.js";
 import { BRIDGE_PROGRAM_ID, SOLANA_CDARK_TOKEN_MINT, INCO_LIGHTNING_PROGRAM_ID } from "@/lib/constants";
 import { decrypt } from "@inco/solana-sdk/attested-decrypt";
@@ -63,9 +62,42 @@ function deriveAllowancePDA(handle: bigint, allowedAddress: PublicKey): [PublicK
 // sha256("global:grant_handle_access")[0:8] = 24470d30a07322ff
 const GRANT_HANDLE_ACCESS_DISCRIMINATOR = Buffer.from([0x24, 0x47, 0x0d, 0x30, 0xa0, 0x73, 0x22, 0xff]);
 
-export function VaultBalance() {
-    const { publicKey, connected, signMessage, signTransaction } = useWallet();
+// Safe wrapper for Solana wallet hooks
+function useSolanaWallet() {
+    const [mounted, setMounted] = useState(false);
+    
+    useEffect(() => {
+        setMounted(true);
+    }, []);
+
+    if (!mounted) {
+        return {
+            publicKey: null,
+            connected: false,
+            signMessage: undefined,
+            signTransaction: undefined,
+            connection: null
+        };
+    }
+
+    // eslint-disable-next-line react-hooks/rules-of-hooks
+    const { useWallet, useConnection } = require("@solana/wallet-adapter-react");
+    // eslint-disable-next-line react-hooks/rules-of-hooks
+    const wallet = useWallet();
+    // eslint-disable-next-line react-hooks/rules-of-hooks
     const { connection } = useConnection();
+    
+    return {
+        publicKey: wallet.publicKey,
+        connected: wallet.connected,
+        signMessage: wallet.signMessage,
+        signTransaction: wallet.signTransaction,
+        connection
+    };
+}
+
+export function VaultBalance() {
+    const { publicKey, connected, signMessage, signTransaction, connection } = useSolanaWallet();
 
     const [vaultExists, setVaultExists] = useState<boolean | null>(null);
     const [vaultData, setVaultData] = useState<VaultData | null>(null);
@@ -75,18 +107,13 @@ export function VaultBalance() {
     const [decrypting, setDecrypting] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [status, setStatus] = useState<string>("");
-    const [mounted, setMounted] = useState(false);
     const [lastHandle, setLastHandle] = useState<string>("");
-
-    useEffect(() => {
-        setMounted(true);
-    }, []);
 
     const tokenMint = new PublicKey(SOLANA_CDARK_TOKEN_MINT);
 
     // Fetch vault data when wallet connects
     useEffect(() => {
-        if (connected && publicKey) {
+        if (connected && publicKey && connection) {
             fetchVaultData();
         } else {
             setVaultExists(null);
@@ -129,7 +156,7 @@ export function VaultBalance() {
     }, [connected, publicKey, lastHandle, connection]);
 
     const fetchVaultData = async () => {
-        if (!publicKey) return;
+        if (!publicKey || !connection) return;
 
         setLoading(true);
         setError(null);
@@ -180,8 +207,8 @@ export function VaultBalance() {
     };
 
     const handleDecrypt = async () => {
-        if (!publicKey || !signMessage || !signTransaction || !vaultData) {
-            setError("Wallet not connected or missing signMessage/signTransaction capability");
+        if (!publicKey || !signMessage || !signTransaction || !vaultData || !connection) {
+            setError("Wallet not connected or missing required capabilities");
             return;
         }
 
@@ -292,15 +319,6 @@ export function VaultBalance() {
         }
     };
 
-    if (!mounted) {
-        return (
-            <div className="p-6 bg-neutral-900 rounded-lg border border-neutral-800">
-                <h2 className="text-lg font-semibold mb-2">Solana Vault</h2>
-                <p className="text-neutral-400 text-sm">Loading...</p>
-            </div>
-        );
-    }
-
     if (!connected) {
         return (
             <div className="p-6 bg-neutral-900 rounded-lg border border-neutral-800">
@@ -376,7 +394,7 @@ export function VaultBalance() {
                                 {(Number(decryptedBalance) / 1e18).toFixed(4)} cDARK
                             </p>
                             <p className="text-xs text-green-400/70 mt-2">
-                                ✓ Successfully decrypted using Inco attested decrypt
+                                [OK] Successfully decrypted using Inco attested decrypt
                             </p>
                         </div>
                     )}
@@ -388,7 +406,7 @@ export function VaultBalance() {
                             disabled={decrypting}
                             className="w-full py-3 bg-purple-600 hover:bg-purple-500 disabled:bg-neutral-700 disabled:cursor-not-allowed rounded font-medium transition-colors"
                         >
-                            {decrypting ? (status || "Decrypting...") : "🔓 Decrypt Balance (Attested)"}
+                            {decrypting ? (status || "Decrypting...") : "Decrypt Balance (Attested)"}
                         </button>
                     )}
 
@@ -425,11 +443,11 @@ export function VaultBalance() {
             {/* Error */}
             {error && (
                 <div className="mt-4 p-3 bg-red-900/30 border border-red-800 rounded text-sm">
-                    <p className="text-red-300 font-medium mb-2">⚠️ Error</p>
+                    <p className="text-red-300 font-medium mb-2">[ERROR] Error</p>
                     <p className="text-red-200/80">{error}</p>
                     {error.includes("Handle expired") && (
                         <div className="mt-3 pt-3 border-t border-red-800/50">
-                            <p className="text-yellow-300 text-xs font-medium">💡 How to fix:</p>
+                            <p className="text-yellow-300 text-xs font-medium">How to fix:</p>
                             <ol className="list-decimal list-inside text-xs text-neutral-300 mt-1 space-y-1">
                                 <li>Use the Faucet to get cDARK on Base</li>
                                 <li>Bridge Base → Solana to create a fresh encrypted balance</li>

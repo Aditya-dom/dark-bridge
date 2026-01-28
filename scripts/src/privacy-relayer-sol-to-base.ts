@@ -129,6 +129,68 @@ interface ConfidentialBridgeOutEvent {
 }
 
 /**
+ * Parse ConfidentialBridgeOutPlaintextEvent from Solana transaction logs.
+ * This version includes the plaintext amount for cross-chain relay.
+ * 
+ * Event structure (from instructions.rs):
+ * - vault: Pubkey
+ * - owner: Pubkey
+ * - destination_evm: [u8; 20]
+ * - encrypted_amount_handle: u128
+ * - plaintext_amount: u128
+ */
+function parseConfidentialBridgeOutPlaintextEvent(logs: string[]): ConfidentialBridgeOutEvent & { plaintextAmount: bigint } | null {
+    // Compute discriminator for ConfidentialBridgeOutPlaintextEvent
+    const EXPECTED_DISCRIMINATOR = Buffer.from(computeAnchorEventDiscriminator("ConfidentialBridgeOutPlaintextEvent"));
+
+    for (const log of logs) {
+        if (log.startsWith("Program data:")) {
+            try {
+                const base64Data = log.replace("Program data: ", "");
+                const data = Buffer.from(base64Data, "base64");
+
+                const discriminator = data.subarray(0, 8);
+                if (!discriminator.equals(EXPECTED_DISCRIMINATOR)) {
+                    continue;
+                }
+
+                // Event: vault (32) + owner (32) + destination_evm (20) + encrypted_amount_handle (16) + plaintext_amount (16)
+                if (data.length >= 8 + 32 + 32 + 20 + 16 + 16) {
+                    let offset = 8;
+
+                    const vault = new PublicKey(data.subarray(offset, offset + 32)).toBase58();
+                    offset += 32;
+
+                    const owner = new PublicKey(data.subarray(offset, offset + 32)).toBase58();
+                    offset += 32;
+
+                    const destinationEvm = data.subarray(offset, offset + 20);
+                    offset += 20;
+
+                    const handleBytes = data.subarray(offset, offset + 16);
+                    const encryptedAmountHandle = readU128LE(handleBytes);
+                    offset += 16;
+
+                    const plaintextBytes = data.subarray(offset, offset + 16);
+                    const plaintextAmount = readU128LE(plaintextBytes);
+
+                    return {
+                        vault,
+                        owner,
+                        destinationEvm,
+                        encryptedAmountHandle,
+                        plaintextAmount,
+                    };
+                }
+            } catch (e) {
+                // Not the event we're looking for
+            }
+        }
+    }
+    return null;
+}
+
+/**
  * Parse ConfidentialBridgeOutEvent from Solana transaction logs.
  * 
  * Event structure (from instructions.rs):
@@ -529,17 +591,28 @@ async function relayConfidentialToBase(txSignature: string): Promise<boolean> {
         const logs = tx.meta?.logMessages || [];
         console.log(`   Found ${logs.length} log messages`);
 
-        // 2. Parse ConfidentialBridgeOutEvent OR RelayedPrivateBridgeOutEvent
-        const regularEvent = parseConfidentialBridgeOutEvent(logs);
-        const privateEvent = parseRelayedPrivateBridgeOutEvent(logs);
+        // 2. Parse events - try plaintext version first (has actual amount!)
+        const plaintextEvent = parseConfidentialBridgeOutPlaintextEvent(logs);
+        const regularEvent = !plaintextEvent ? parseConfidentialBridgeOutEvent(logs) : null;
+        const privateEvent = !plaintextEvent && !regularEvent ? parseRelayedPrivateBridgeOutEvent(logs) : null;
 
         // Create unified event structure
         let destinationEvm: Uint8Array;
         let encryptedAmountHandle: bigint;
         let ownerPubkey: PublicKey | null = null;
         let isSenderPrivate = false;
+        let plaintextAmount: bigint | null = null;
 
-        if (regularEvent) {
+        if (plaintextEvent) {
+            console.log(`   ✅ Found ConfidentialBridgeOutPlaintextEvent:`);
+            console.log(`      Vault: ${plaintextEvent.vault}`);
+            console.log(`      Owner: ${plaintextEvent.owner}`);
+            console.log(`      Plaintext Amount: ${plaintextEvent.plaintextAmount} (REAL AMOUNT!)`);
+            destinationEvm = plaintextEvent.destinationEvm;
+            encryptedAmountHandle = plaintextEvent.encryptedAmountHandle;
+            ownerPubkey = new PublicKey(plaintextEvent.owner);
+            plaintextAmount = plaintextEvent.plaintextAmount;
+        } else if (regularEvent) {
             console.log(`   ✅ Found ConfidentialBridgeOutEvent:`);
             console.log(`      Vault: ${regularEvent.vault}`);
             console.log(`      Owner: ${regularEvent.owner}`);
@@ -579,21 +652,21 @@ async function relayConfidentialToBase(txSignature: string): Promise<boolean> {
         }
         console.log(`   Inco fee: ${incoFee} wei`);
 
-        // 5. Grant handle access and decrypt using official SDK
+        // 5. Use plaintext amount if available, otherwise try to decrypt
         let amountToMint: bigint;
 
-        // For sender-private events, we can't grant handle access (no owner known)
-        // For regular events, try to decrypt if the decryptionWallet matches the vault owner
-        const isOwner = ownerPubkey ? ownerPubkey.equals(decryptionWallet.publicKey) : false;
-
-        if (isSenderPrivate) {
+        if (plaintextAmount !== null && plaintextAmount > 0n) {
+            // We have the real plaintext amount from the event!
+            console.log(`   ✅ Using plaintext amount from event: ${plaintextAmount} tokens`);
+            amountToMint = plaintextAmount;
+        } else if (isSenderPrivate) {
             // Sender-private mode: can't decrypt, use demo fallback
             console.log(`   🔒 Sender-private event: using demo amount (5 tokens)`);
             amountToMint = BigInt(5);
         } else {
             // Try to decrypt the handle - the owner granted access when bridging
-            // Even if we're not the owner, we can try the simple decrypt API
-            // as the handle was allowed for attested decrypt by the bridge program
+            const isOwner = ownerPubkey ? ownerPubkey.equals(decryptionWallet.publicKey) : false;
+            
             try {
                 console.log(`   🔓 Attempting to decrypt handle...`);
 

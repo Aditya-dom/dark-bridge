@@ -1501,5 +1501,11 @@
       "static/css/_app-pages-browser_src_app_providers-inner_tsx.css",
       "static/chunks/_app-pages-browser_src_app_providers-inner_tsx.js"
     ]
+  },
+  "components/WalletConnector.tsx -> @solana/wallet-adapter-react-ui": {
+    "id": "components/WalletConnector.tsx -> @solana/wallet-adapter-react-ui",
+    "files": [
+      "static/chunks/_app-pages-browser_node_modules_solana_wallet-adapter-react-ui_lib_esm_index_js.js"
+    ]
   }
 }

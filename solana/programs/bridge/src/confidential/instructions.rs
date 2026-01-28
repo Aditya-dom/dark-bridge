@@ -54,6 +54,9 @@ pub fn initialize_confidential_vault<'info>(
 /// 
 /// This burns encrypted tokens from the user's vault and emits a bridge message.
 /// The amount is provided as plaintext and trivially encrypted on-chain.
+/// 
+/// For cross-chain TEE: The plaintext amount is emitted in the event so the relayer
+/// can mint the exact amount on Base without needing to decrypt.
 pub fn bridge_confidential_out_plaintext<'info>(
     ctx: Context<'_, '_, '_, 'info, BridgeConfidentialOut<'info>>,
     plaintext_amount: u128,
@@ -98,12 +101,14 @@ pub fn bridge_confidential_out_plaintext<'info>(
         allow(cpi_ctx, new_balance.0, true, vault.owner)?;
     }
 
-    // Emit bridge message event
-    emit!(ConfidentialBridgeOutEvent {
+    // Emit bridge message event with PLAINTEXT amount for cross-chain relay
+    // This allows the relayer to mint the exact amount on Base without decryption
+    emit!(ConfidentialBridgeOutPlaintextEvent {
         vault: vault.key(),
         owner: vault.owner,
         destination_evm,
         encrypted_amount_handle: amount.0,
+        plaintext_amount, // Include plaintext for relayer
     });
 
     Ok(())
@@ -1196,6 +1201,17 @@ pub struct ConfidentialBridgeOutEvent {
     pub owner: Pubkey,
     pub destination_evm: [u8; 20],
     pub encrypted_amount_handle: u128,
+}
+
+/// Event emitted when bridging with plaintext amount (for cross-chain TEE).
+/// Includes the plaintext amount so the relayer can mint exact amount on Base.
+#[event]
+pub struct ConfidentialBridgeOutPlaintextEvent {
+    pub vault: Pubkey,
+    pub owner: Pubkey,
+    pub destination_evm: [u8; 20],
+    pub encrypted_amount_handle: u128,
+    pub plaintext_amount: u128,
 }
 
 #[event]
