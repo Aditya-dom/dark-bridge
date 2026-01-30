@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { PublicKey, SystemProgram, Transaction, TransactionInstruction } from "@solana/web3.js";
+import { useWallet, useConnection } from "@solana/wallet-adapter-react";
 import { BRIDGE_PROGRAM_ID, SOLANA_CDARK_TOKEN_MINT, INCO_LIGHTNING_PROGRAM_ID } from "@/lib/constants";
 import { decrypt } from "@inco/solana-sdk/attested-decrypt";
 
@@ -62,42 +63,9 @@ function deriveAllowancePDA(handle: bigint, allowedAddress: PublicKey): [PublicK
 // sha256("global:grant_handle_access")[0:8] = 24470d30a07322ff
 const GRANT_HANDLE_ACCESS_DISCRIMINATOR = Buffer.from([0x24, 0x47, 0x0d, 0x30, 0xa0, 0x73, 0x22, 0xff]);
 
-// Safe wrapper for Solana wallet hooks
-function useSolanaWallet() {
-    const [mounted, setMounted] = useState(false);
-    
-    useEffect(() => {
-        setMounted(true);
-    }, []);
-
-    if (!mounted) {
-        return {
-            publicKey: null,
-            connected: false,
-            signMessage: undefined,
-            signTransaction: undefined,
-            connection: null
-        };
-    }
-
-    // eslint-disable-next-line react-hooks/rules-of-hooks
-    const { useWallet, useConnection } = require("@solana/wallet-adapter-react");
-    // eslint-disable-next-line react-hooks/rules-of-hooks
-    const wallet = useWallet();
-    // eslint-disable-next-line react-hooks/rules-of-hooks
-    const { connection } = useConnection();
-    
-    return {
-        publicKey: wallet.publicKey,
-        connected: wallet.connected,
-        signMessage: wallet.signMessage,
-        signTransaction: wallet.signTransaction,
-        connection
-    };
-}
-
 export function VaultBalance() {
-    const { publicKey, connected, signMessage, signTransaction, connection } = useSolanaWallet();
+    const { publicKey, connected, signMessage, signTransaction } = useWallet();
+    const { connection } = useConnection();
 
     const [vaultExists, setVaultExists] = useState<boolean | null>(null);
     const [vaultData, setVaultData] = useState<VaultData | null>(null);
@@ -125,19 +93,19 @@ export function VaultBalance() {
     // Auto-poll for vault updates every 10 seconds
     useEffect(() => {
         if (!connected || !publicKey) return;
-        
+
         const interval = setInterval(async () => {
             // Silently check for updates
             try {
                 const [pda] = deriveVaultPda(publicKey, tokenMint);
                 const accountInfo = await connection.getAccountInfo(pda);
-                
+
                 if (accountInfo) {
                     const data = accountInfo.data;
                     // Correct offset: discriminator (8) + owner (32) + token_mint (32) = 72
                     const encryptedBalance = data.subarray(8 + 32 + 32, 8 + 32 + 32 + 16);
                     const newHandle = readU128LE(encryptedBalance).toString();
-                    
+
                     // If handle changed, refresh the full data
                     if (newHandle !== lastHandle) {
                         console.log("Vault handle changed! Refreshing...", newHandle);
@@ -151,7 +119,7 @@ export function VaultBalance() {
                 // Silent fail for polling
             }
         }, 10000); // Poll every 10 seconds
-        
+
         return () => clearInterval(interval);
     }, [connected, publicKey, lastHandle, connection]);
 
@@ -195,7 +163,7 @@ export function VaultBalance() {
                 encryptedBalanceHandle: readU128LE(encryptedBalance),
                 bump: bump ?? 0,
             });
-            
+
             // Track the handle for change detection
             setLastHandle(readU128LE(encryptedBalance).toString());
         } catch (err: any) {
@@ -207,7 +175,7 @@ export function VaultBalance() {
     };
 
     const handleDecrypt = async () => {
-        if (!publicKey || !signMessage || !signTransaction || !vaultData || !connection) {
+        if (!publicKey || !signMessage || !signTransaction || !connection || !vaultData) {
             setError("Wallet not connected or missing required capabilities");
             return;
         }
@@ -223,96 +191,128 @@ export function VaultBalance() {
 
         try {
             const handle = vaultData.encryptedBalanceHandle;
-
-            // Step 1: Grant handle access (required before decryption)
-            setStatus("Granting handle access (sign TX)...");
-            
             const [allowancePDA] = deriveAllowancePDA(handle, publicKey);
-            console.log("Allowance PDA:", allowancePDA.toBase58());
 
-            // Build grant_handle_access instruction
-            const handleBuffer = handleToBuffer(handle);
-            const instructionData = Buffer.concat([
-                GRANT_HANDLE_ACCESS_DISCRIMINATOR,
-                handleBuffer,
-            ]);
+            // Step 1: Check permissions on Solana
+            setStatus("Checking permissions on Solana...");
+            const allowanceInfo = await connection.getAccountInfo(allowancePDA, "confirmed");
+            let permissionsConfirmedOnChain = allowanceInfo !== null;
 
-            const instruction = new TransactionInstruction({
-                programId: new PublicKey(BRIDGE_PROGRAM_ID),
-                keys: [
-                    { pubkey: publicKey, isSigner: true, isWritable: true },
-                    { pubkey: INCO_LIGHTNING_ID, isSigner: false, isWritable: false },
-                    { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
-                    { pubkey: allowancePDA, isSigner: false, isWritable: true },
-                    { pubkey: publicKey, isSigner: false, isWritable: false },
-                ],
-                data: instructionData,
-            });
+            if (permissionsConfirmedOnChain) {
+                console.log("Allowance already exists on Solana.");
+            } else {
+                // Grant handle access
+                setStatus("Granting handle access (waiting for signature)...");
+                console.log("Allowance PDA:", allowancePDA.toBase58());
 
-            const tx = new Transaction().add(instruction);
-            const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash();
-            tx.recentBlockhash = blockhash;
-            tx.feePayer = publicKey;
+                // Build grant_handle_access instruction
+                const handleBuffer = handleToBuffer(handle);
+                const instructionData = Buffer.concat([
+                    GRANT_HANDLE_ACCESS_DISCRIMINATOR,
+                    handleBuffer,
+                ]);
 
-            try {
-                const signedTx = await signTransaction(tx);
-                const sig = await connection.sendRawTransaction(signedTx.serialize());
-                await connection.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight });
-                console.log("Handle access granted:", sig);
-                setStatus(`Handle access granted! TX: ${sig.slice(0, 20)}...`);
-                
-                // Wait a bit for the allowance to propagate
-                await new Promise(r => setTimeout(r, 2000));
-            } catch (grantErr: any) {
-                console.error("Grant handle access error:", grantErr);
-                // Check if it's "already in use" which means allowance already exists
-                if (grantErr.message?.includes("already in use") || 
-                    grantErr.logs?.some((l: string) => l.includes("already in use"))) {
-                    console.log("Allowance already exists, continuing...");
-                    setStatus("Allowance already exists, decrypting...");
-                } else {
-                    // Log the full error for debugging
-                    console.error("Grant TX failed:", grantErr.logs || grantErr.message);
-                    setError(`Grant handle access failed: ${grantErr.message}. Check console for details.`);
-                    setDecrypting(false);
-                    return;
-                }
-            }
-
-            // Step 2: Use Inco SDK for attested decrypt
-            setStatus("Sign message to prove ownership...");
-
-            try {
-                const result = await decrypt([handle.toString()], {
-                    address: publicKey,
-                    signMessage: signMessage,
+                const instruction = new TransactionInstruction({
+                    programId: new PublicKey(BRIDGE_PROGRAM_ID),
+                    keys: [
+                        { pubkey: publicKey, isSigner: true, isWritable: true },
+                        { pubkey: INCO_LIGHTNING_ID, isSigner: false, isWritable: false },
+                        { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+                        { pubkey: allowancePDA, isSigner: false, isWritable: true },
+                        { pubkey: publicKey, isSigner: false, isWritable: false },
+                    ],
+                    data: instructionData,
                 });
-                
-                console.log("Decrypt result:", result);
-                
-                if (result.plaintexts && result.plaintexts.length > 0) {
-                    const plaintext = BigInt(result.plaintexts[0]);
-                    setDecryptedBalance(plaintext);
-                    setStatus("Decryption successful!");
-                } else {
-                    throw new Error("No plaintext returned from decryption");
+
+                const tx = new Transaction().add(instruction);
+                const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash();
+                tx.recentBlockhash = blockhash;
+                tx.feePayer = publicKey;
+
+                try {
+                    const signedTx = await signTransaction(tx);
+                    setStatus("Sending transaction...");
+                    const sig = await connection.sendRawTransaction(signedTx.serialize());
+                    await connection.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight });
+                    console.log("Handle access granted:", sig);
+                    setStatus("Permissions granted on Solana!");
+
+                    // Initial wait for propagation
+                    await new Promise(r => setTimeout(r, 2000));
+                } catch (grantErr: any) {
+                    console.error("Grant handle access error:", grantErr);
+                    // Check if race condition occurred (account created by another request)
+                    if (grantErr.message?.includes("already in use") ||
+                        grantErr.logs?.some((l: string) => l.includes("already in use"))) {
+                        console.log("Allowance already exists (caught error), continuing...");
+                    } else {
+                        throw grantErr;
+                    }
                 }
-            } catch (decryptErr: any) {
-                console.error("Decrypt SDK error:", decryptErr);
-                // Check for "No ciphertext found" error
-                if (decryptErr.message?.includes("No ciphertext found") || 
-                    decryptErr.message?.includes("ciphertext")) {
-                    throw new Error(
-                        "Handle expired! The encrypted value no longer exists in Inco's TEE. " +
-                        "This happens when the Inco network is reset. " +
-                        "Please bridge fresh tokens from Base → Solana to create a new encrypted balance."
-                    );
-                }
-                throw decryptErr;
             }
+
+            // Step 2: Use Inco SDK for attested decrypt with Aggressive Retry Logic
+            // The Covalidator API *will* lag behind Solana. We must wait for it.
+
+            let attempts = 0;
+            const maxAttempts = 10; // Try for ~40 seconds
+            let success = false;
+
+            while (attempts < maxAttempts && !success) {
+                attempts++;
+                try {
+                    setStatus(attempts === 1
+                        ? "Requesting decryption from Inco Network..."
+                        : `Syncing with Inco Network (${attempts}/${maxAttempts})...`
+                    );
+
+                    const result = await decrypt([handle.toString()], {
+                        address: publicKey,
+                        signMessage: signMessage,
+                    });
+
+                    console.log("Decrypt result:", result);
+
+                    if (result.plaintexts && result.plaintexts.length > 0) {
+                        const plaintext = BigInt(result.plaintexts[0]);
+                        setDecryptedBalance(plaintext);
+                        setStatus("Decryption successful!");
+                        success = true;
+                    } else {
+                        throw new Error("No plaintext returned from decryption");
+                    }
+                } catch (decryptErr: any) {
+                    console.error(`Decrypt attempt ${attempts} failed:`, decryptErr);
+
+                    const errString = JSON.stringify(decryptErr) + (decryptErr.message || "");
+                    const isPermissionError = errString.includes("not allowed");
+
+                    // If it's a permission error, it means Inco hasn't seen the Solana TX yet.
+                    // We MUST wait and retry.
+                    if (isPermissionError && attempts < maxAttempts) {
+                        console.log("Permission not yet synced, waiting 4s...");
+                        await new Promise(r => setTimeout(r, 4000)); // Wait 4s
+                    } else {
+                        // If it's another error (e.g. signature rejected), fail immediately
+                        // or if we've run out of attempts
+                        if (attempts === maxAttempts) throw decryptErr;
+                        await new Promise(r => setTimeout(r, 2000)); // Generic retry wait
+                    }
+                }
+            }
+
         } catch (err: any) {
             console.error("Decrypt error:", err);
-            setError(err.message || "Decryption failed");
+
+            // Format error message for user
+            let errorMsg = err.message || "Decryption failed";
+            if (JSON.stringify(err).includes("not allowed")) {
+                errorMsg = "Sync timeout: Inco nodes haven't seen your permission yet. Please wait 1 minute and try again.";
+            } else if (err.message?.includes("No ciphertext")) {
+                errorMsg = "Handle expired/invalid. Please bridge fresh tokens.";
+            }
+
+            setError(errorMsg);
             setStatus("");
         } finally {
             setDecrypting(false);
