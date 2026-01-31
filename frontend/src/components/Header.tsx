@@ -4,7 +4,7 @@ import { ConnectButton } from "@rainbow-me/rainbowkit";
 import dynamic from "next/dynamic";
 import { useWallet } from "@solana/wallet-adapter-react";
 import { useAccount } from "wagmi";
-import { Shield } from "lucide-react";
+import Image from "next/image";
 import { MenuDropdown } from "./MenuDropdown";
 
 const SolanaWalletButton = dynamic(
@@ -19,12 +19,18 @@ export function Header() {
     return (
         <header className="relative z-50 flex items-center justify-between py-3 px-4 md:py-4 md:px-6">
             {/* Logo */}
-            <div className="flex items-center gap-3">
-                <div className="w-10 h-10 md:w-12 md:h-12 rounded-xl bg-gradient-to-br from-green-500/20 to-green-600/10 border border-green-500/20 flex items-center justify-center">
-                    <Shield className="w-6 h-6 text-green-500" />
+            <div className="flex items-center gap-0">
+                <div className="w-20 h-20 md:w-24 md:h-24 rounded-xl overflow-hidden flex items-center justify-center">
+                    <Image 
+                        src="/darklogo.png" 
+                        alt="DarkBridge Logo" 
+                        width={96} 
+                        height={96} 
+                        className="object-contain w-full h-full"
+                    />
                 </div>
                 <div>
-                    <h1 className="text-lg md:text-xl font-bold tracking-wider text-white">DARKBRIDGE</h1>
+                    <h1 className="text-xl md:text-2xl font-bold tracking-wider text-white">DARKBRIDGE</h1>
                     <p className="text-[10px] text-gray-500 tracking-[0.2em] uppercase font-medium">Private Cross-Chain</p>
                 </div>
             </div>

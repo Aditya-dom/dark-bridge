@@ -5,28 +5,25 @@ import {
     http,
     parseAbi,
     type Address,
-    type Hex,
-    toHex,
 } from "viem";
 import { baseSepolia } from "viem/chains";
 import { privateKeyToAccount } from "viem/accounts";
-import { Connection, PublicKey, Keypair, Transaction, TransactionInstruction, SystemProgram, sendAndConfirmTransaction } from "@solana/web3.js";
+import { Connection, PublicKey, Keypair } from "@solana/web3.js";
 import crypto from "crypto";
 
-// --- ENV & CONSTANTS ---
+// --- ENV & TLS ---
 if (process.env.NODE_TLS_REJECT_UNAUTHORIZED === undefined) {
     process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
 }
 
-const DEPLOY_ENV = "testnet-alpha";
-const CONFIDENTIAL_BRIDGE_ADDRESS = "0xD705858A979a4ab42e7a2e43e8CcC726Dbd87369" as Address; // Updated one
-const CONFIDENTIAL_TOKEN_ADDRESS = "0xFBAD5A940d89e504C5f8C9e0fC3A976A82334565" as Address; // Updated one
-
+// --- Constants (matching privacy-relayer-sol-to-base.ts) ---
+const CONFIDENTIAL_BRIDGE_ADDRESS = "0xD705858A979a4ab42e7a2e43e8CcC726Dbd87369" as Address;
+const CONFIDENTIAL_TOKEN_ADDRESS = "0xFBAD5A940d89e504C5f8C9e0fC3A976A82334565" as Address;
 const BRIDGE_PROGRAM_ID = new PublicKey("EEMKRm1ANMBZHS6yEi67bKVuZDPhztQHVWBzoFnoVbh9");
-const INCO_LIGHTNING_ID = new PublicKey("5sjEbPiqgZrYwR31ahR6Uk9wf5awoX61YGg7jExQSwaj");
-const SOLANA_RPC_URL = "https://api.devnet.solana.com";
-const BASE_RPC_URL = "https://sepolia.base.org";
+const SOLANA_RPC_URL = process.env.SOLANA_RPC_URL || "https://api.devnet.solana.com";
+const BASE_RPC_URL = process.env.BASE_RPC_URL || "https://sepolia.base.org";
 
+// ABIs
 const CONFIDENTIAL_TOKEN_ABI = parseAbi([
     "function confidentialMint(address to, bytes encryptedAmount) external payable",
     "function confidentialMintForDemo(address to, uint256 plainAmount) external payable",
@@ -45,7 +42,9 @@ export async function GET(req: NextRequest) {
     const authHeader = req.headers.get('authorization');
     if (process.env.CRON_SECRET && authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
         const urlKey = req.nextUrl.searchParams.get('key');
-        if (urlKey !== process.env.CRON_SECRET) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+        if (urlKey !== process.env.CRON_SECRET) {
+            return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+        }
     }
 
     // 2. Load Keys
@@ -56,7 +55,7 @@ export async function GET(req: NextRequest) {
     }
 
     try {
-        // Setup Params
+        // Setup clients
         const evmAccount = privateKeyToAccount(evmPrivateKey as `0x${string}`);
         const baseWalletClient = createWalletClient({
             account: evmAccount,
@@ -69,18 +68,21 @@ export async function GET(req: NextRequest) {
         });
 
         const solanaConnection = new Connection(SOLANA_RPC_URL, "confirmed");
-        let solanaKeypair: Keypair;
-        try {
-            const bs58 = require('bs58');
-            solanaKeypair = Keypair.fromSecretKey(bs58.decode(solanaPrivateKey));
-        } catch {
-            solanaKeypair = Keypair.fromSecretKey(Uint8Array.from(JSON.parse(solanaPrivateKey)));
+        // Validate keypair format (not used in this route but validates config)
+        if (solanaPrivateKey.startsWith("[")) {
+            Keypair.fromSecretKey(Uint8Array.from(JSON.parse(solanaPrivateKey)));
+        } else {
+            try {
+                const decoded = Uint8Array.from(Buffer.from(solanaPrivateKey, 'base64'));
+                Keypair.fromSecretKey(decoded.length === 64 ? decoded : Uint8Array.from(JSON.parse(solanaPrivateKey)));
+            } catch {
+                Keypair.fromSecretKey(Uint8Array.from(JSON.parse(solanaPrivateKey)));
+            }
         }
 
-        console.log(`[Sol -> Base Relayer] Running... EVM: ${evmAccount.address}`);
+        console.log(`[Sol -> Base Relayer] EVM: ${evmAccount.address}`);
 
-        // 3. Poll recent Solana Signatures
-        // We look at the last 20 signatures for the bridge program to keep it light
+        // 3. Poll recent Solana Signatures for the bridge program
         const signatures = await solanaConnection.getSignaturesForAddress(
             BRIDGE_PROGRAM_ID,
             { limit: 20 },
@@ -102,60 +104,52 @@ export async function GET(req: NextRequest) {
 
             const logs = tx.meta.logMessages;
 
-            // Parse Events
+            // Parse Events - try plaintext version first (has actual amount)
             const plaintextEvent = parseConfidentialBridgeOutPlaintextEvent(logs);
             const regularEvent = !plaintextEvent ? parseConfidentialBridgeOutEvent(logs) : null;
             const privateEvent = !plaintextEvent && !regularEvent ? parseRelayedPrivateBridgeOutEvent(logs) : null;
 
             if (!plaintextEvent && !regularEvent && !privateEvent) continue;
 
-            // Check if we need to relay
-            // How to check if already relayed?
-            // On Base, we can't easily query "nonce processed" without a mapping.
-            // But Vercel cron runs every minute. 
-            // We could check the timestamp of the Solana TX. If it's too old (> 2 mins), skip it.
+            // Skip old transactions (> 5 mins)
             if (tx.blockTime) {
                 const now = Math.floor(Date.now() / 1000);
-                if (now - tx.blockTime > 300) { // Skip if older than 5 mins
-                    continue;
-                }
+                if (now - tx.blockTime > 300) continue;
             }
 
             console.log(`Processing Solana TX: ${sig.signature}`);
 
             // Extract Details
             let destinationAddress: Address;
-            let amountToMint: bigint = 5n; // Default fallback
+            let amountToMint: bigint;
 
-            // 4. Determine Amount
             if (plaintextEvent) {
                 console.log("   Found Plaintext Event");
                 destinationAddress = ("0x" + Buffer.from(plaintextEvent.destinationEvm).toString("hex")) as Address;
                 amountToMint = plaintextEvent.plaintextAmount;
+                console.log(`   Plaintext amount: ${amountToMint}`);
             } else if (regularEvent) {
                 console.log("   Found Encrypted Event");
                 destinationAddress = ("0x" + Buffer.from(regularEvent.destinationEvm).toString("hex")) as Address;
-                // Try decrypt if we are owner (relayer)
-                // Or use fallback
-                // For now, simpler to use fallback for hackathon unless we implement the full SDK decrypt here
-                // But wait, the script implements `requestAttestedDecryptSimple`. logic.
-                // We can try the simple decrypt fetch.
+                // Try simple decrypt
                 const decrypted = await requestAttestedDecryptSimple(regularEvent.encryptedAmountHandle);
                 if (decrypted && decrypted.plaintext > 0n) {
                     amountToMint = decrypted.plaintext;
                     console.log(`   Decrypted: ${amountToMint}`);
+                } else {
+                    console.log("   Using demo fallback amount");
+                    amountToMint = BigInt(5);
                 }
             } else if (privateEvent) {
-                console.log("   Found Private Event");
+                console.log("   Found Private Event (sender hidden)");
                 destinationAddress = ("0x" + Buffer.from(privateEvent.destinationEvm).toString("hex")) as Address;
-                // Sender private -> fallback
+                amountToMint = BigInt(5); // Demo fallback for private events
             } else {
                 continue;
             }
 
-            // 5. Mint on Base
-            // Get Fee
-            let incoFee = 100000000000000n; // 0.0001 ETH
+            // 4. Get Inco Fee
+            let incoFee = 100000000000000n; // 0.0001 ETH default
             try {
                 incoFee = await basePublicClient.readContract({
                     address: CONFIDENTIAL_BRIDGE_ADDRESS,
@@ -164,37 +158,53 @@ export async function GET(req: NextRequest) {
                 });
             } catch { }
 
-            // Send TX
-            try {
-                const hash = await baseWalletClient.writeContract({
-                    address: CONFIDENTIAL_TOKEN_ADDRESS,
-                    abi: CONFIDENTIAL_TOKEN_ABI,
-                    functionName: "confidentialMintForDemo",
-                    args: [destinationAddress, amountToMint],
-                    value: incoFee,
-                });
-                console.log(`   Minted on Base: ${hash}`);
-                results.push({ tx: sig.signature, status: "relayed", hash });
-            } catch (err: any) {
-                if (err.message.includes("nonce")) {
-                    // likely nonce issue or already minted?
-                    // actually "already minted" checks are hard without contract support
+            // 5. Mint on Base with retry logic for nonce issues
+            let hash: `0x${string}` | null = null;
+
+            for (let attempt = 1; attempt <= 3; attempt++) {
+                try {
+                    const nonce = await basePublicClient.getTransactionCount({
+                        address: evmAccount.address,
+                    });
+                    console.log(`   Attempt ${attempt}: Using nonce ${nonce}`);
+
+                    hash = await baseWalletClient.writeContract({
+                        address: CONFIDENTIAL_TOKEN_ADDRESS,
+                        abi: CONFIDENTIAL_TOKEN_ABI,
+                        functionName: "confidentialMintForDemo",
+                        args: [destinationAddress, amountToMint],
+                        value: incoFee,
+                        nonce: nonce,
+                    });
+                    
+                    console.log(`   ✅ Minted on Base: ${hash}`);
+                    results.push({ tx: sig.signature, status: "relayed", hash });
+                    break;
+                } catch (txError: unknown) {
+                    const txErrMsg = txError instanceof Error ? txError.message : String(txError);
+                    if (txErrMsg.includes("nonce") && attempt < 3) {
+                        console.log(`   ⚠️ Nonce error, retrying in 2s...`);
+                        await new Promise(r => setTimeout(r, 2000));
+                    } else {
+                        console.error(`   Mint Error: ${txErrMsg}`);
+                        results.push({ tx: sig.signature, status: "error", error: txErrMsg });
+                        break;
+                    }
                 }
-                console.error(`   Mint Error: ${err.message}`);
-                results.push({ tx: sig.signature, status: "error", error: err.message });
             }
         }
 
         return NextResponse.json({ success: true, results });
 
-    } catch (e: any) {
+    } catch (e: unknown) {
         console.error("Relayer Error:", e);
-        return NextResponse.json({ error: e.message }, { status: 500 });
+        const errMsg = e instanceof Error ? e.message : String(e);
+        return NextResponse.json({ error: errMsg }, { status: 500 });
     }
 }
 
 
-// --- PARSING HELPERS ---
+// --- PARSING HELPERS (matching privacy-relayer-sol-to-base.ts) ---
 
 interface BridgeOutEvent {
     vault?: string;
@@ -205,10 +215,6 @@ interface BridgeOutEvent {
 }
 
 function parseConfidentialBridgeOutPlaintextEvent(logs: string[]): BridgeOutEvent & { plaintextAmount: bigint } | null {
-    // Discriminator calculation omitted for brevity, using hardcoded known or re-impl
-    // Actually we need to implement it correctly.
-    // Discriminator: sha256("event:ConfidentialBridgeOutPlaintextEvent")[0:8]
-    // We can compute it "live"
     const EXPECTED_DISCRIMINATOR = computeAnchorEventDiscriminator("ConfidentialBridgeOutPlaintextEvent");
 
     for (const log of logs) {
@@ -237,13 +243,12 @@ function parseConfidentialBridgeOutPlaintextEvent(logs: string[]): BridgeOutEven
 }
 
 function parseConfidentialBridgeOutEvent(logs: string[]): BridgeOutEvent | null {
-    const EXPECTED_DISCRIMINATOR = Buffer.from("fee3f47c36edab41", "hex"); // Known discriminator from script
+    const EXPECTED_DISCRIMINATOR = Buffer.from("fee3f47c36edab41", "hex");
     for (const log of logs) {
         if (log.startsWith("Program data:")) {
             try {
                 const data = Buffer.from(log.replace("Program data: ", ""), "base64");
                 if (data.subarray(0, 8).equals(EXPECTED_DISCRIMINATOR)) {
-                    // 8 + 32 + 32 + 20 + 16
                     if (data.length >= 108) {
                         let offset = 8 + 64;
                         const destinationEvm = data.subarray(offset, offset + 20);
@@ -266,7 +271,6 @@ function parseRelayedPrivateBridgeOutEvent(logs: string[]): BridgeOutEvent | nul
             try {
                 const data = Buffer.from(log.replace("Program data: ", ""), "base64");
                 if (data.subarray(0, 8).equals(EXPECTED_DISCRIMINATOR)) {
-                    // 8 + 20 + 16
                     if (data.length >= 44) {
                         let offset = 8;
                         const destinationEvm = data.subarray(offset, offset + 20);
@@ -299,7 +303,7 @@ function readU128LE(buffer: Uint8Array): bigint {
     return result;
 }
 
-// Simple decrypt via API
+// Simple decrypt via Inco API
 async function requestAttestedDecryptSimple(handle: bigint) {
     try {
         const response = await fetch(`https://grpc.solana-devnet.alpha.devnet.inco.org/crypto/decrypt`, {

@@ -167,7 +167,7 @@ export function BridgeForm() {
                                     return;
                                 }
                             }
-                        } catch (apiError) {
+                        } catch {
                             console.log("Relayer API not available, falling back to blockchain polling");
                         }
                     }

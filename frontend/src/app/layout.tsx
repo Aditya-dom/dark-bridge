@@ -8,6 +8,9 @@ const inter = Inter({ subsets: ["latin"] });
 export const metadata: Metadata = {
     title: "Privacy Bridge - Inco",
     description: "Cross-chain privacy bridge powered by Inco TEE",
+    icons: {
+        icon: "/darklogo.png",
+    },
 };
 
 export default function RootLayout({
