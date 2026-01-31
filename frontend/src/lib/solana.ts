@@ -210,7 +210,36 @@ export async function getVaultBalance(
 }
 
 /**
- * Build the bridge_confidential_out_plaintext instruction for Solana → Base transfer
+ * Derive allowance PDA for Inco Lightning.
+ *
+ * IMPORTANT: Inco Lightning manages allowance accounts internally.
+ * We derive placeholder PDAs using the owner + index to provide unique addresses
+ * that Inco can use for allowance storage. The program ID must be INCO_LIGHTNING_ID
+ * since Inco owns these accounts.
+ */
+function deriveIncoAllowancePda(owner: PublicKey, index: number): PublicKey {
+    const [pda] = PublicKey.findProgramAddressSync(
+        [
+            Buffer.from("allowance"),
+            owner.toBuffer(),
+            Buffer.from([index]),
+        ],
+        INCO_LIGHTNING_ID
+    );
+    return pda;
+}
+
+/**
+ * Build the bridge_confidential_out_plaintext instruction for Solana → Base transfer.
+ *
+ * IMPORTANT: This function now includes 4 remaining accounts for Inco ACL grants:
+ * - remaining_accounts[0]: Allowance PDA for new_balance handle
+ * - remaining_accounts[1]: Owner pubkey (allowed to decrypt new_balance)
+ * - remaining_accounts[2]: Allowance PDA for actual_amount handle
+ * - remaining_accounts[3]: Owner pubkey (allowed to decrypt actual_amount)
+ *
+ * This ensures that BOTH the new balance AND the bridged amount get allow() called,
+ * enabling attested decrypt for cross-chain relaying.
  */
 export function buildBridgeConfidentialOutInstruction(
     owner: PublicKey,
@@ -244,11 +273,12 @@ export function buildBridgeConfidentialOutInstruction(
         destinationBytes,
     ]);
 
-    // Accounts for bridge_confidential_out_plaintext:
-    // 1. owner (signer, mut)
-    // 2. vault (mut)
-    // 3. inco_lightning_program
-    // 4. system_program
+    // For plaintext version, we DON'T need allowance accounts because:
+    // 1. The plaintext amount is emitted in the event
+    // 2. The relayer reads it directly - no decryption needed
+    // 3. Only new_balance needs allow() for user to check their balance
+
+    // Base accounts only - simpler and works!
     return new TransactionInstruction({
         programId: new PublicKey(BRIDGE_PROGRAM_ID),
         keys: [

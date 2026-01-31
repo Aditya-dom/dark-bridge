@@ -262,7 +262,7 @@ export function VaultBalance() {
             // Inco team recommends: 1-2 second backoff before retry, exponential growth
 
             let attempts = 0;
-            const maxAttempts = 15; // Increased for better tolerance of TEE sync delays
+            const maxAttempts = 3; // Quick failure detection
             let success = false;
             const baseDelayMs = 1500; // Start with 1.5s as recommended by Inco
             const maxDelayMs = 10000; // Cap at 10s

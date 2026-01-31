@@ -99,6 +99,21 @@ pub fn bridge_confidential_out_plaintext<'info>(
             },
         );
         allow(cpi_ctx, new_balance.0, true, vault.owner)?;
+
+        // Also allow for actual_amount (so user can decrypt via attested decrypt if needed)
+        // This enables verification and debugging even when using plaintext flow
+        if ctx.remaining_accounts.len() >= 4 {
+            let cpi_ctx = CpiContext::new(
+                inco.clone(),
+                Allow {
+                    allowance_account: ctx.remaining_accounts[2].clone(),
+                    signer: signer.clone(),
+                    allowed_address: ctx.remaining_accounts[3].clone(),
+                    system_program: ctx.accounts.system_program.to_account_info(),
+                },
+            );
+            allow(cpi_ctx, actual_amount.0, true, vault.owner)?;
+        }
     }
 
     // Emit bridge message event with PLAINTEXT amount for cross-chain relay
