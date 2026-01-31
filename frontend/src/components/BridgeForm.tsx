@@ -14,7 +14,9 @@ import {
     getDefaultTokenMint,
     bridgeConfidentialOut,
     getVaultBalance,
+    deriveVaultPda,
 } from "@/lib/solana";
+import { PublicKey } from "@solana/web3.js";
 import { motion, AnimatePresence } from "framer-motion";
 import {
     Shield,
@@ -104,12 +106,36 @@ export function BridgeForm() {
         }
     };
 
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    const pollForRelayCompletion = useCallback(async (targetChain: "solana" | "base", _fromBlock: bigint | null) => {
+    // Relayer HTTP endpoint for TX hash lookups
+    const RELAYER_API_URL = "http://localhost:3456";
+
+    const pollForRelayCompletion = useCallback(async (
+        targetChain: "solana" | "base", 
+        startBlockParam: bigint | null, 
+        initialValue: bigint | null = null,
+        initialSolanaSig: string | null = null,
+        sourceTxHash: string | null = null  // Base TX hash for relayer lookup
+    ) => {
         if (!publicClient || !evmAddress) return;
 
         let attempts = 0;
-        const maxAttempts = 60; // 5 minutes (5 seconds * 60)
+        const maxAttempts = 150; // 5 minutes with faster polling
+
+        // Use passed startBlock or get current block as fallback
+        let startBlock: bigint;
+        if (startBlockParam !== null) {
+            startBlock = startBlockParam;
+        } else {
+            try {
+                startBlock = await publicClient.getBlockNumber();
+            } catch {
+                startBlock = 0n;
+            }
+        }
+        console.log("Polling from block:", startBlock.toString());
+
+        // Pad address to 32 bytes for topic matching (EVM indexed address format)
+        const paddedAddress = ("0x" + evmAddress.slice(2).toLowerCase().padStart(64, "0")) as `0x${string}`;
 
         const poll = async () => {
             attempts++;
@@ -120,59 +146,145 @@ export function BridgeForm() {
                 return;
             }
 
+            // Poll every 2 seconds for first 30 attempts, then every 5 seconds
+            const pollInterval = attempts < 30 ? 2000 : 5000;
+
             try {
                 if (targetChain === "solana") {
-                    // Check Solana for token receipt
-                    // For now, simulate with timeout
-                    if (attempts >= 12) { // ~1 minute
+                    // FIRST: Try to get TX hash directly from relayer API
+                    if (sourceTxHash) {
+                        try {
+                            const response = await fetch(`${RELAYER_API_URL}/tx/${sourceTxHash}`);
+                            if (response.ok) {
+                                const data = await response.json();
+                                if (data.solanaTxHash) {
+                                    console.log("Got Solana TX from relayer API:", data.solanaTxHash);
+                                    setTxHash(data.solanaTxHash);
+                                    setRelayTxHash(data.solanaTxHash);
+                                    setWaitingForRelay(false);
+                                    setRelayComplete(true);
+                                    setStatus("Tokens minted on Solana");
+                                    return;
+                                }
+                            }
+                        } catch (apiError) {
+                            console.log("Relayer API not available, falling back to blockchain polling");
+                        }
+                    }
+
+                    // FALLBACK: Check Solana for new transactions on the vault PDA
+                    if (!solanaPublicKey || !connection) {
+                        setTimeout(poll, pollInterval);
+                        return;
+                    }
+
+                    const tokenMint = getTokenMint();
+                    const [vaultPda] = deriveVaultPda(new PublicKey(solanaPublicKey.toBase58()), tokenMint);
+                    
+                    // Get recent signatures for the vault - returned NEWEST FIRST
+                    const signatures = await connection.getSignaturesForAddress(vaultPda, { limit: 10 });
+                    
+                    console.log(`Found ${signatures.length} vault signatures, initial was: ${initialSolanaSig?.slice(0, 20)}...`);
+                    
+                    // Find the FIRST new transaction after the initial one
+                    // Signatures are returned NEWEST first, so we need to find the one 
+                    // that's right before (newer than) our initialSolanaSig
+                    // 
+                    // Example: [tx5_newest, tx4, tx3, tx2_initial, tx1_older]
+                    // We want tx3 (the first one after initial)
+                    let newTx = null;
+                    let foundInitial = initialSolanaSig === null; // If no initial, any new one is valid
+                    let lastNewSig = null;
+                    
+                    for (const sig of signatures) {
+                        if (initialSolanaSig && sig.signature === initialSolanaSig) {
+                            // Found the initial signature, the previous one we saw is our target
+                            foundInitial = true;
+                            break;
+                        }
+                        // Track the latest confirmed sig we've seen as we iterate
+                        if (sig.confirmationStatus === 'confirmed' || sig.confirmationStatus === 'finalized') {
+                            lastNewSig = sig;
+                        }
+                    }
+                    
+                    // If we found initial and have a new sig before it, that's our transaction
+                    if (foundInitial && lastNewSig) {
+                        newTx = lastNewSig;
+                        console.log(`Found new tx (first after initial): ${newTx.signature.slice(0, 20)}...`);
+                    }
+
+                    // Also check if vault balance changed as a backup
+                    const currentHandle = await getVaultBalance(connection, solanaPublicKey, tokenMint);
+                    const balanceChanged = currentHandle !== null && initialValue !== null && currentHandle !== initialValue;
+
+                    if (newTx) {
+                        console.log("Found new Solana vault transaction:", newTx.signature);
+                        setTxHash(newTx.signature);
+                        setRelayTxHash(newTx.signature);
+                        setWaitingForRelay(false);
+                        setRelayComplete(true);
+                        setStatus("Tokens minted on Solana");
+                    } else if (balanceChanged && lastNewSig) {
+                        // Balance changed and we have a new signature
+                        console.log("Vault balance changed, using first new signature:", lastNewSig.signature);
+                        setTxHash(lastNewSig.signature);
+                        setRelayTxHash(lastNewSig.signature);
                         setWaitingForRelay(false);
                         setRelayComplete(true);
                         setStatus("Tokens minted on Solana");
                     } else {
-                        setTimeout(poll, 5000);
+                        setTimeout(poll, pollInterval);
                     }
                 } else {
-                    // Check Base for ConfidentialBridgeReceived event
+                    // Check Base for ANY log from confidential token contract
+                    // No event signature filter - just scan for logs containing our address
                     const currentBlock = await publicClient.getBlockNumber();
+                    
+                    console.log(`Polling Base: block ${startBlock} to ${currentBlock}`);
+                    
                     const logs = await publicClient.getLogs({
-                        address: CONFIDENTIAL_BRIDGE_ADDRESS as `0x${string}`,
-                        event: {
-                            type: "event",
-                            name: "ConfidentialBridgeReceived",
-                            inputs: [
-                                { type: "uint256", indexed: true, name: "nonce" },
-                                { type: "address", indexed: true, name: "localToken" },
-                                { type: "address", indexed: true, name: "to" },
-                                { type: "bytes32", indexed: false, name: "encryptedAmount" }
-                            ]
-                        },
-                        fromBlock: currentBlock - 100n,
+                        address: CONFIDENTIAL_TOKEN_ADDRESS as `0x${string}`,
+                        fromBlock: startBlock,
                         toBlock: currentBlock,
                     });
 
-                    const userLogs = logs.filter(log =>
-                        log.args.to?.toLowerCase() === evmAddress.toLowerCase()
-                    );
+                    console.log(`Found ${logs.length} total logs from token contract`);
 
-                    if (userLogs.length > 0) {
-                        const latestLog = userLogs[userLogs.length - 1];
+                    // Find the NEWEST log containing our address (logs are in ascending order, so reverse to find newest first)
+                    const matchingLogs = logs.filter(log => 
+                        log.topics.some(topic => 
+                            topic?.toLowerCase() === paddedAddress.toLowerCase()
+                        )
+                    );
+                    
+                    console.log(`Found ${matchingLogs.length} logs matching our address`);
+                    
+                    // Get the newest matching log (last in the array)
+                    const mintLog = matchingLogs.length > 0 ? matchingLogs[matchingLogs.length - 1] : null;
+
+                    if (mintLog && mintLog.transactionHash) {
+                        console.log("Found mint log for address:", evmAddress);
+                        console.log("Block:", mintLog.blockNumber, "TX:", mintLog.transactionHash);
+                        // Update txHash to show the Base destination TX
+                        setTxHash(mintLog.transactionHash);
+                        setRelayTxHash(mintLog.transactionHash);
                         setWaitingForRelay(false);
                         setRelayComplete(true);
-                        setRelayTxHash(latestLog.transactionHash);
                         setStatus("Tokens minted on Base");
                     } else {
-                        setTimeout(poll, 5000);
+                        setTimeout(poll, pollInterval);
                     }
                 }
             } catch (err) {
                 console.error("Poll error:", err);
-                setTimeout(poll, 5000);
+                setTimeout(poll, pollInterval);
             }
         };
 
-        // Start polling after 5 seconds
-        setTimeout(poll, 5000);
-    }, [publicClient, evmAddress]);
+        // Start polling immediately (1 second delay to let relayer start)
+        setTimeout(poll, 1000);
+    }, [publicClient, evmAddress, connection, solanaPublicKey, getTokenMint]);
 
     const handleInitializeVault = async () => {
         if (!solanaPublicKey || !signTransaction) {
@@ -284,6 +396,16 @@ export function BridgeForm() {
     const bridgeBaseToSolana = async () => {
         if (!walletClient || !evmAddress || !publicClient || !solanaPublicKey) return;
 
+        // Step 0: Capture initial Solana Vault balance
+        let initialHandle: bigint | null = null;
+        const tokenMint = getTokenMint();
+        try {
+            initialHandle = await getVaultBalance(connection, solanaPublicKey, tokenMint);
+            console.log("Initial Solana Vault Handle:", initialHandle);
+        } catch (e) {
+            console.warn("Could not get initial vault balance (maybe vault not created yet):", e);
+        }
+
         // Step 1: Get Inco fee
         setStatus("Getting Inco fee...");
         let incoFee: bigint;
@@ -303,6 +425,20 @@ export function BridgeForm() {
         // Step 3: Convert Solana pubkey to bytes32
         const solanaPubkeyBytes = solanaPublicKey.toBytes();
         const solanaBytes32 = toHex(solanaPubkeyBytes, { size: 32 });
+
+        // Capture the latest signature for the vault PDA RIGHT BEFORE sending TX
+        // This minimizes the chance of another transaction arriving in between
+        let initialSolanaSig: string | null = null;
+        try {
+            const [vaultPda] = deriveVaultPda(new PublicKey(solanaPublicKey.toBase58()), tokenMint);
+            const sigs = await connection.getSignaturesForAddress(vaultPda, { limit: 1 });
+            if (sigs.length > 0) {
+                initialSolanaSig = sigs[0].signature;
+                console.log("Initial vault signature (captured right before bridge):", initialSolanaSig);
+            }
+        } catch (e) {
+            console.warn("Could not get initial vault signature:", e);
+        }
 
         // Step 4: Call bridgePrivateToSolanaPlaintext (simpler approach - no client-side encryption needed)
         // The contract encrypts the amount on-chain and emits plaintext in event for relayer
@@ -330,14 +466,28 @@ export function BridgeForm() {
         setStatus("Transaction confirmed");
         setWaitingForRelay(true);
 
-        // Poll for relay completion
-        pollForRelayCompletion("solana", receipt.blockNumber);
+        // Poll for relay completion - pass Base TX hash for direct relayer lookup
+        pollForRelayCompletion("solana", receipt.blockNumber, initialHandle, initialSolanaSig, hash);
     };
 
     const bridgeSolanaToBase = async () => {
-        if (!solanaPublicKey || !signTransaction || !evmAddress) {
+        if (!solanaPublicKey || !signTransaction || !evmAddress || !publicClient) {
             setError("Please connect both wallets");
             return;
+        }
+
+        // Step 0: Capture initial Base Token Balance
+        let initialBalance: bigint | null = null;
+        try {
+            initialBalance = await publicClient.readContract({
+                address: CONFIDENTIAL_TOKEN_ADDRESS as `0x${string}`,
+                abi: parseAbi(["function balanceOf(address) view returns (uint256)"]),
+                functionName: "balanceOf",
+                args: [evmAddress],
+            });
+            console.log("Initial Base Balance:", initialBalance.toString());
+        } catch (e) {
+            console.warn("Could not get initial base balance:", e);
         }
 
         const tokenMint = getTokenMint();
@@ -361,6 +511,16 @@ export function BridgeForm() {
         const amountBigInt = BigInt(Math.floor(parseFloat(amount) * 1e18));
         console.log("Amount to bridge:", amountBigInt.toString());
 
+        // IMPORTANT: Capture Base block RIGHT BEFORE sending Solana TX
+        // This ensures we only look for mint logs AFTER this exact moment
+        let startBlock: bigint | null = null;
+        try {
+            startBlock = await publicClient.getBlockNumber();
+            console.log("Captured start block RIGHT BEFORE Solana TX:", startBlock.toString());
+        } catch (e) {
+            console.warn("Could not get block number:", e);
+        }
+
         // Step 4: Send bridge_confidential_out transaction
         setStatus("Sending Solana transaction...");
         const signature = await bridgeConfidentialOut(
@@ -377,8 +537,8 @@ export function BridgeForm() {
         setStatus("Transaction confirmed");
         setWaitingForRelay(true);
 
-        // Poll for relay completion
-        pollForRelayCompletion("base", null);
+        // Poll for relay completion - pass the startBlock we captured before sending
+        pollForRelayCompletion("base", startBlock, initialBalance);
     };
 
     // Check if both wallets are connected (required for both directions)
@@ -499,8 +659,14 @@ export function BridgeForm() {
                         <div className="flex items-center justify-between">
                             <input
                                 type="number"
+                                min="0"
                                 value={amount}
-                                onChange={(e) => setAmount(e.target.value)}
+                                onChange={(e) => {
+                                    const val = e.target.value;
+                                    if (val === "" || parseFloat(val) >= 0) {
+                                        setAmount(val);
+                                    }
+                                }}
                                 placeholder="0"
                                 className="w-full bg-transparent text-3xl md:text-4xl font-light text-white placeholder-gray-700 focus:outline-none"
                             />
@@ -511,12 +677,7 @@ export function BridgeForm() {
                                 <span className="font-semibold text-white">cDARK</span>
                             </div>
                         </div>
-                        <div className="flex items-center justify-between mt-3">
-                            <span className="text-sm text-gray-600">Balance: 0.00 cDARK</span>
-                            <button className="text-xs font-semibold text-green-500 hover:text-green-400 uppercase tracking-wider">
-                                MAX
-                            </button>
-                        </div>
+
                     </div>
 
                     {/* Info Box */}
@@ -535,11 +696,44 @@ export function BridgeForm() {
                         </div>
                     </div>
 
-                    {/* TX Hash */}
-                    {txHash && !waitingForRelay && (
-                        <div className="text-xs text-gray-500 bg-black/20 rounded-lg p-3 break-all">
-                            TX: {txHash}
-                        </div>
+                    {/* TX Hash - Show after relay completes with destination chain TX */}
+                    {txHash && !waitingForRelay && !loading && (
+                        <motion.div 
+                            initial={{ opacity: 0, y: 10 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            className="bg-gradient-to-r from-green-500/10 to-green-600/5 border border-green-500/20 rounded-2xl p-4"
+                        >
+                            <div className="flex items-center justify-between">
+                                <div className="flex items-center gap-3">
+                                    <div className="w-10 h-10 rounded-xl bg-green-500/20 flex items-center justify-center">
+                                        <CheckCircle2 className="w-5 h-5 text-green-500" />
+                                    </div>
+                                    <div>
+                                        <p className="text-xs text-gray-400 uppercase tracking-wider">
+                                            {txHash.startsWith("0x") ? "Base Transaction" : "Solana Transaction"}
+                                        </p>
+                                        <p className="text-sm font-mono text-white mt-0.5">
+                                            {txHash.slice(0, 16)}...{txHash.slice(-12)}
+                                        </p>
+                                    </div>
+                                </div>
+                                <a
+                                    href={
+                                        txHash.startsWith("0x")
+                                            ? `https://sepolia.basescan.org/tx/${txHash}`
+                                            : `https://explorer.solana.com/tx/${txHash}?cluster=devnet`
+                                    }
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="flex items-center gap-2 px-4 py-2 rounded-xl bg-green-500/20 hover:bg-green-500/30 border border-green-500/30 text-green-400 text-sm font-medium transition-all hover:scale-105"
+                                >
+                                    View
+                                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                                    </svg>
+                                </a>
+                            </div>
+                        </motion.div>
                     )}
 
                     {/* Initialize Vault Button (if needed) */}

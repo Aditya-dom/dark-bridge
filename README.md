@@ -1,69 +1,78 @@
-![Base](logo.png)
+# DarkBridge
 
-# Base Bridge
+<div align="center">
+  <img src="frontend/public/logo.png" alt="DarkBridge Logo" width="120" />
+  <h3>Private Cross-Chain Bridge utilizing Inco TEEs</h3>
+</div>
 
-A bridge between Base and blockchains outside the Ethereum ecosystem. Currently has support for Solana.
+DarkBridge is a privacy-preserving cross-chain bridge connecting **Base** (EVM) and **Solana** (SVM). It leverages **Inco Network's Trusted Execution Environment (TEE)** to facilitate encrypted token transfers, ensuring transaction amounts and balances remain confidential on-chain.
 
-<!-- Badge row 1 - status -->
+## Features
 
-[![GitHub contributors](https://img.shields.io/github/contributors/base/bridge)](https://github.com/base/bridge/graphs/contributors)
-[![GitHub commit activity](https://img.shields.io/github/commit-activity/w/base/bridge)](https://github.com/base/bridge/graphs/commit-activity)
-[![GitHub Stars](https://img.shields.io/github/stars/base/bridge.svg)](https://github.com/base/bridge/stargazers)
-![GitHub repo size](https://img.shields.io/github/repo-size/base/bridge)
-[![GitHub](https://img.shields.io/github/license/base/bridge?color=blue)](https://github.com/base/bridge/blob/main/LICENSE)
+* **Privacy First**: Transaction amounts are encrypted end-to-end using Inco's FHE (Fully Homomorphic Encryption) stack.
+* **Cross-Chain**: Bridge assets seamlessly between Base and Solana.
+* **Serverless Architecture**: Relayers are hosted as Next.js API Routes on Vercel, eliminating the need for external servers.
+* **Mobile Responsive**: A modern, responsive UI optimized for all devices.
+* **Fast & Secure**: Powered by Hyperlane for messaging and Inco for privacy.
 
-<!-- Badge row 2 - links and profiles -->
+## Project Structure
 
-[![Website base.org](https://img.shields.io/website-up-down-green-red/https/base.org.svg)](https://base.org)
-[![Blog](https://img.shields.io/badge/blog-up-green)](https://base.mirror.xyz/)
-[![Docs](https://img.shields.io/badge/docs-up-green)](https://docs.base.org/)
-[![Discord](https://img.shields.io/discord/1067165013397213286?label=discord)](https://base.org/discord)
-[![Twitter BuildOnBase](https://img.shields.io/twitter/follow/BuildOnBase?style=social)](https://twitter.com/BuildOnBase)
+* **`frontend/`**: Next.js application containing the UI and Vercel-hosted relayers.
+  * `src/app/docs/`: Detailed user guide and documentation.
+  * `src/app/api/cron/`: Auto-relayer API routes.
+* **`clients/`**: TypeScript clients for interacting with the bridge contracts.
+* **`base/`**: Solidity contracts for the Base side (ConfidentialBridge, ConfidentialToken).
+* **`solana/`**: Rust programs for the Solana side (ConfidentialVault, Bridge).
 
-<!-- Badge row 3 - detailed status -->
+## Getting Started
 
-[![GitHub pull requests by-label](https://img.shields.io/github/issues-pr-raw/base/bridge)](https://github.com/base/bridge/pulls)
-[![GitHub Issues](https://img.shields.io/github/issues-raw/base/bridge.svg)](https://github.com/base/bridge/issues)
+### Prerequisites
 
-## How it Works
+* Node.js & npm/bun
+* EVM Wallet (MateMask, Coinbase Wallet)
+* Solana Wallet (Phantom, Backpack)
 
-This bridge allows you to:
+### Running Locally
 
-- Transfer tokens between Base and Solana
-- Send arbitrary cross-chain messages
-- Deploy wrapped tokens on either chain
+1. **Install Dependencies**:
 
-> [!NOTE]
->
-> For native Ethereum ↔ Base bridging, see [our official docs](https://docs.base.org/base-chain/network-information/bridges-mainnet).
+    ```bash
+    cd frontend
+    npm install
+    ```
 
-## Usage
+2. **Environment Setup**:
+    Create `.env.local` in `frontend/` with your keys for local relayer testing (optional):
 
-### Base → Solana
+    ```env
+    EVM_PRIVATE_KEY=0x...
+    SOLANA_PRIVATE_KEY=[...]
+    CRON_SECRET=test
+    ```
 
-Send tokens or messages from Base to Solana (multi-step process):
+3. **Start Development Server**:
 
-```bash
-cd base
-# See base/README.md for detailed instructions
-```
+    ```bash
+    npm run dev
+    ```
 
-After initiating on Base, wait ~15 minutes for an updated root to be posted to Solana and complete the transfer with prove + finalize steps:
+    Visit `http://localhost:3000` to use the bridge.
 
-```bash
-cd solana
-# See solana/README.md for prove and finalize instructions
-```
+## Hosting on Vercel
 
-### Solana → Base
+The entire infrastructure is designed to be hosted on Vercel.
 
-Send tokens or messages from Solana to Base:
+1. **Deploy**: Connect your repo to Vercel.
+2. **Configure Config**: Add `EVM_PRIVATE_KEY`, `SOLANA_PRIVATE_KEY`, and `CRON_SECRET` to Vercel Environment Variables.
+3. **Automation**: The relayers will automatically run every minute via Vercel Cron.
 
-```bash
-cd solana
-# See solana/README.md for detailed instructions
-```
+**See [HOSTING_GUIDE.md](HOSTING_GUIDE.md) for detailed deployment instructions.**
 
-## License
+## Documentation
 
-MIT License - see [LICENSE](LICENSE) for details.
+Comprehensive usage documentation is available within the app at `/docs` or via the "Docs" link in the menu.
+
+* **Faucet**: Validated drip for testnet tokens.
+* **Vault Init**: One-time setup for private Solana accounts.
+* **Bridging**: Step-by-step transfer guide.
+* **Balance Check**: Attested decryption to view private balances.
