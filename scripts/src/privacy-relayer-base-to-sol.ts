@@ -475,10 +475,11 @@ async function crossChainReencrypt(evmHandle: Hex): Promise<Uint8Array> {
     console.log(`      ℹ️ Using attestedReveal (no signature needed for e.reveal() handles)`);
 
     // Configure retries for async handle processing
+    // Inco team recommends: 1-2 second base backoff for TEE sync delays
     const backoffConfig = {
-        maxRetries: 10,
-        baseDelayInMs: 3000,
-        backoffFactor: 1.5,
+        maxRetries: 15,
+        baseDelayInMs: 1500, // Start at 1.5s as recommended by Inco
+        backoffFactor: 1.5,  // 1.5s -> 2.25s -> 3.4s -> 5s -> 7.5s -> 10s (capped)
     };
 
     try {
