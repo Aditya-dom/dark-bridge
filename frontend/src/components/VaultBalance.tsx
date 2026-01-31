@@ -5,6 +5,8 @@ import { PublicKey, SystemProgram, Transaction, TransactionInstruction } from "@
 import { useWallet, useConnection } from "@solana/wallet-adapter-react";
 import { BRIDGE_PROGRAM_ID, SOLANA_CDARK_TOKEN_MINT, INCO_LIGHTNING_PROGRAM_ID } from "@/lib/constants";
 import { decrypt } from "@inco/solana-sdk/attested-decrypt";
+import { motion, AnimatePresence } from "framer-motion";
+import { Wallet, RefreshCw, Lock, Eye, ExternalLink, Loader2, AlertCircle, CheckCircle } from "lucide-react";
 
 // Inco Lightning Program ID on Solana Devnet
 const INCO_LIGHTNING_ID = new PublicKey(INCO_LIGHTNING_PROGRAM_ID);
@@ -88,6 +90,7 @@ export function VaultBalance() {
             setVaultData(null);
             setDecryptedBalance(null);
         }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [connected, publicKey]);
 
     // Auto-poll for vault updates every 10 seconds
@@ -115,12 +118,13 @@ export function VaultBalance() {
                         fetchVaultData();
                     }
                 }
-            } catch (e) {
+            } catch {
                 // Silent fail for polling
             }
         }, 10000); // Poll every 10 seconds
 
         return () => clearInterval(interval);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [connected, publicKey, lastHandle, connection]);
 
     const fetchVaultData = async () => {
@@ -166,9 +170,10 @@ export function VaultBalance() {
 
             // Track the handle for change detection
             setLastHandle(readU128LE(encryptedBalance).toString());
-        } catch (err: any) {
-            console.error("Error fetching vault:", err);
-            setError(err.message || "Failed to fetch vault");
+        } catch (err: unknown) {
+            const error = err as Error;
+            console.error("Error fetching vault:", error);
+            setError(error.message || "Failed to fetch vault");
         } finally {
             setLoading(false);
         }
@@ -196,7 +201,7 @@ export function VaultBalance() {
             // Step 1: Check permissions on Solana
             setStatus("Checking permissions on Solana...");
             const allowanceInfo = await connection.getAccountInfo(allowancePDA, "confirmed");
-            let permissionsConfirmedOnChain = allowanceInfo !== null;
+            const permissionsConfirmedOnChain = allowanceInfo !== null;
 
             if (permissionsConfirmedOnChain) {
                 console.log("Allowance already exists on Solana.");
@@ -239,11 +244,12 @@ export function VaultBalance() {
 
                     // Initial wait for propagation
                     await new Promise(r => setTimeout(r, 2000));
-                } catch (grantErr: any) {
-                    console.error("Grant handle access error:", grantErr);
+                } catch (grantErr: unknown) {
+                    const grantError = grantErr as Error & { logs?: string[] };
+                    console.error("Grant handle access error:", grantError);
                     // Check if race condition occurred (account created by another request)
-                    if (grantErr.message?.includes("already in use") ||
-                        grantErr.logs?.some((l: string) => l.includes("already in use"))) {
+                    if (grantError.message?.includes("already in use") ||
+                        grantError.logs?.some((l: string) => l.includes("already in use"))) {
                         console.log("Allowance already exists (caught error), continuing...");
                     } else {
                         throw grantErr;
@@ -281,10 +287,11 @@ export function VaultBalance() {
                     } else {
                         throw new Error("No plaintext returned from decryption");
                     }
-                } catch (decryptErr: any) {
-                    console.error(`Decrypt attempt ${attempts} failed:`, decryptErr);
+                } catch (decryptErr: unknown) {
+                    const decError = decryptErr as Error;
+                    console.error(`Decrypt attempt ${attempts} failed:`, decError);
 
-                    const errString = JSON.stringify(decryptErr) + (decryptErr.message || "");
+                    const errString = JSON.stringify(decError) + (decError.message || "");
                     const isPermissionError = errString.includes("not allowed");
 
                     // If it's a permission error, it means Inco hasn't seen the Solana TX yet.
@@ -295,20 +302,21 @@ export function VaultBalance() {
                     } else {
                         // If it's another error (e.g. signature rejected), fail immediately
                         // or if we've run out of attempts
-                        if (attempts === maxAttempts) throw decryptErr;
+                        if (attempts === maxAttempts) throw decError;
                         await new Promise(r => setTimeout(r, 2000)); // Generic retry wait
                     }
                 }
             }
 
-        } catch (err: any) {
-            console.error("Decrypt error:", err);
+        } catch (err: unknown) {
+            const error = err as Error;
+            console.error("Decrypt error:", error);
 
             // Format error message for user
-            let errorMsg = err.message || "Decryption failed";
-            if (JSON.stringify(err).includes("not allowed")) {
+            let errorMsg = error.message || "Decryption failed";
+            if (JSON.stringify(error).includes("not allowed")) {
                 errorMsg = "Sync timeout: Inco nodes haven't seen your permission yet. Please wait 1 minute and try again.";
-            } else if (err.message?.includes("No ciphertext")) {
+            } else if (error.message?.includes("No ciphertext")) {
                 errorMsg = "Handle expired/invalid. Please bridge fresh tokens.";
             }
 
@@ -321,143 +329,174 @@ export function VaultBalance() {
 
     if (!connected) {
         return (
-            <div className="p-6 bg-neutral-900 rounded-lg border border-neutral-800">
-                <h2 className="text-lg font-semibold mb-2">Solana Vault</h2>
-                <p className="text-neutral-400 text-sm">Connect Solana wallet to view your vault</p>
+            <div className="glass-card p-6">
+                <div className="flex items-center gap-3 mb-4">
+                    <div className="w-10 h-10 rounded-xl bg-purple-500/10 border border-purple-500/20 flex items-center justify-center">
+                        <Wallet className="w-5 h-5 text-purple-500" />
+                    </div>
+                    <div>
+                        <h2 className="text-lg font-semibold text-white">Solana Vault</h2>
+                        <p className="text-sm text-gray-500">Connect wallet to view</p>
+                    </div>
+                </div>
             </div>
         );
     }
 
     return (
-        <div className="p-6 bg-neutral-900 rounded-lg border border-neutral-800">
+        <motion.div
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="glass-card p-6"
+        >
+            {/* Header */}
             <div className="flex items-center justify-between mb-4">
-                <h2 className="text-lg font-semibold">Solana Vault</h2>
+                <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-xl bg-purple-500/10 border border-purple-500/20 flex items-center justify-center">
+                        <Wallet className="w-5 h-5 text-purple-500" />
+                    </div>
+                    <div>
+                        <h2 className="text-lg font-semibold text-white">Solana Vault</h2>
+                        <p className="text-xs text-gray-500">Encrypted Balance</p>
+                    </div>
+                </div>
                 <button
                     onClick={fetchVaultData}
                     disabled={loading}
-                    className="text-xs text-blue-400 hover:text-blue-300 disabled:text-neutral-500"
+                    className="p-2 rounded-lg bg-white/5 hover:bg-white/10 border border-white/5 transition-colors disabled:opacity-50"
                 >
-                    {loading ? "Loading..." : "Refresh"}
+                    <RefreshCw className={`w-4 h-4 text-gray-400 ${loading ? 'animate-spin' : ''}`} />
                 </button>
             </div>
 
             {/* Vault Address */}
             {vaultPda && (
-                <div className="mb-4 p-3 bg-neutral-800 rounded text-xs">
-                    <p className="text-neutral-400 mb-1">Vault PDA</p>
-                    <a
-                        href={`https://explorer.solana.com/address/${vaultPda}?cluster=devnet`}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-blue-400 hover:underline break-all"
-                    >
-                        {vaultPda}
-                    </a>
-                </div>
+                <a
+                    href={`https://explorer.solana.com/address/${vaultPda}?cluster=devnet`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-center gap-2 mb-4 p-3 rounded-xl bg-black/20 border border-white/5 hover:border-purple-500/30 transition-colors group"
+                >
+                    <span className="text-xs text-gray-500 truncate flex-1 font-mono">{vaultPda}</span>
+                    <ExternalLink className="w-3 h-3 text-gray-500 group-hover:text-purple-400 transition-colors" />
+                </a>
             )}
 
+            {/* Loading State */}
             {loading && (
-                <div className="text-center py-4">
-                    <p className="text-neutral-400">Loading vault data...</p>
+                <div className="flex items-center justify-center py-6">
+                    <Loader2 className="w-6 h-6 text-purple-400 animate-spin" />
                 </div>
             )}
 
+            {/* No Vault State */}
             {!loading && vaultExists === false && (
-                <div className="p-4 bg-yellow-900/30 border border-yellow-700 rounded text-sm">
-                    <p className="text-yellow-200">No vault found</p>
-                    <p className="text-yellow-300/70 text-xs mt-1">
-                        Bridge tokens from Base → Solana to create your vault
-                    </p>
+                <div className="p-4 rounded-xl bg-yellow-500/5 border border-yellow-500/10">
+                    <div className="flex items-start gap-3">
+                        <AlertCircle className="w-5 h-5 text-yellow-500 shrink-0 mt-0.5" />
+                        <div>
+                            <p className="text-sm text-yellow-400 font-medium">No vault found</p>
+                            <p className="text-xs text-yellow-500/70 mt-1">
+                                Bridge tokens from Base to Solana to create your vault
+                            </p>
+                        </div>
+                    </div>
                 </div>
             )}
 
+            {/* Vault Data */}
             {!loading && vaultExists && vaultData && (
                 <div className="space-y-4">
                     {/* Encrypted Balance Handle */}
-                    <div className="p-4 bg-neutral-800 rounded">
-                        <p className="text-sm text-neutral-400 mb-2">Encrypted Balance Handle</p>
-                        <p className="text-lg font-mono text-white break-all">
+                    <div className="p-4 rounded-xl bg-black/20 border border-white/5">
+                        <div className="flex items-center gap-2 mb-2">
+                            <Lock className="w-4 h-4 text-gray-500" />
+                            <span className="text-xs font-medium text-gray-500 uppercase tracking-wider">Encrypted Handle</span>
+                        </div>
+                        <p className="text-sm font-mono text-white break-all">
                             {vaultData.encryptedBalanceHandle === BigInt(0)
-                                ? "0 (empty)"
+                                ? <span className="text-gray-600">0 (empty)</span>
                                 : vaultData.encryptedBalanceHandle.toString()}
-                        </p>
-                        <p className="text-xs text-neutral-500 mt-2">
-                            This is NOT your balance. It&apos;s an encrypted reference stored in Inco TEE.
                         </p>
                     </div>
 
                     {/* Decrypted Balance */}
-                    {decryptedBalance !== null && (
-                        <div className="p-4 bg-green-900/30 border border-green-700 rounded">
-                            <p className="text-sm text-green-400 mb-2">Decrypted Balance</p>
-                            <p className="text-2xl font-bold text-green-300">
-                                {(Number(decryptedBalance) / 1e18).toFixed(4)} cDARK
-                            </p>
-                            <p className="text-xs text-green-400/70 mt-2">
-                                [OK] Successfully decrypted using Inco attested decrypt
-                            </p>
-                        </div>
-                    )}
+                    <AnimatePresence>
+                        {decryptedBalance !== null && (
+                            <motion.div
+                                initial={{ opacity: 0, scale: 0.95 }}
+                                animate={{ opacity: 1, scale: 1 }}
+                                exit={{ opacity: 0, scale: 0.95 }}
+                                className="p-4 rounded-xl bg-green-500/5 border border-green-500/10"
+                            >
+                                <div className="flex items-center gap-2 mb-2">
+                                    <CheckCircle className="w-4 h-4 text-green-500" />
+                                    <span className="text-xs font-medium text-green-500 uppercase tracking-wider">Decrypted Balance</span>
+                                </div>
+                                <p className="text-2xl font-bold text-green-400">
+                                    {(Number(decryptedBalance) / 1e18).toFixed(4)} <span className="text-lg text-green-500/70">cDARK</span>
+                                </p>
+                            </motion.div>
+                        )}
+                    </AnimatePresence>
 
                     {/* Decrypt Button */}
                     {vaultData.encryptedBalanceHandle !== BigInt(0) && decryptedBalance === null && (
                         <button
                             onClick={handleDecrypt}
                             disabled={decrypting}
-                            className="w-full py-3 bg-purple-600 hover:bg-purple-500 disabled:bg-neutral-700 disabled:cursor-not-allowed rounded font-medium transition-colors"
+                            className="w-full py-3 rounded-xl bg-purple-500/10 border border-purple-500/20 text-purple-400 font-medium hover:bg-purple-500/20 hover:border-purple-500/30 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
                         >
-                            {decrypting ? (status || "Decrypting...") : "Decrypt Balance (Attested)"}
+                            {decrypting ? (
+                                <>
+                                    <Loader2 className="w-4 h-4 animate-spin" />
+                                    <span>{status || "Decrypting..."}</span>
+                                </>
+                            ) : (
+                                <>
+                                    <Eye className="w-4 h-4" />
+                                    <span>Decrypt Balance</span>
+                                </>
+                            )}
                         </button>
                     )}
 
-                    {/* Decrypt Again Button */}
+                    {/* Clear Button */}
                     {decryptedBalance !== null && (
                         <button
                             onClick={() => {
                                 setDecryptedBalance(null);
                                 setStatus("");
                             }}
-                            className="w-full py-2 bg-neutral-700 hover:bg-neutral-600 rounded text-sm font-medium transition-colors"
+                            className="w-full py-2 rounded-xl bg-white/5 border border-white/5 text-gray-400 text-sm font-medium hover:bg-white/10 transition-colors"
                         >
                             Clear & Decrypt Again
                         </button>
                     )}
 
                     {/* Status */}
-                    {status && !decryptedBalance && (
-                        <p className="text-sm text-blue-400 text-center">{status}</p>
+                    {status && !decryptedBalance && !decrypting && (
+                        <p className="text-sm text-purple-400 text-center">{status}</p>
                     )}
-
-                    {/* Info */}
-                    <div className="p-3 bg-neutral-800/50 rounded text-xs text-neutral-400">
-                        <p className="font-medium text-neutral-300 mb-1">How attested decrypt works:</p>
-                        <ol className="list-decimal list-inside space-y-1">
-                            <li>Sign a message to prove wallet ownership</li>
-                            <li>Inco TEE verifies your signature</li>
-                            <li>TEE returns the decrypted plaintext value</li>
-                        </ol>
-                    </div>
                 </div>
             )}
 
             {/* Error */}
             {error && (
-                <div className="mt-4 p-3 bg-red-900/30 border border-red-800 rounded text-sm">
-                    <p className="text-red-300 font-medium mb-2">[ERROR] Error</p>
-                    <p className="text-red-200/80">{error}</p>
-                    {error.includes("Handle expired") && (
-                        <div className="mt-3 pt-3 border-t border-red-800/50">
-                            <p className="text-yellow-300 text-xs font-medium">How to fix:</p>
-                            <ol className="list-decimal list-inside text-xs text-neutral-300 mt-1 space-y-1">
-                                <li>Use the Faucet to get cDARK on Base</li>
-                                <li>Bridge Base → Solana to create a fresh encrypted balance</li>
-                                <li>Wait for relayer to process (check terminal)</li>
-                                <li>Refresh and try decrypt again</li>
-                            </ol>
+                <div className="mt-4 p-3 rounded-xl bg-red-500/5 border border-red-500/10">
+                    <div className="flex items-start gap-2">
+                        <AlertCircle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
+                        <div>
+                            <p className="text-sm text-red-400">{error}</p>
+                            {error.includes("Handle expired") && (
+                                <p className="text-xs text-red-400/70 mt-2">
+                                    Use the Faucet to get cDARK, then bridge to Solana
+                                </p>
+                            )}
                         </div>
-                    )}
+                    </div>
                 </div>
             )}
-        </div>
+        </motion.div>
     );
 }

@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/no-unused-vars */
 // Inco SDK integration per SKILL.md
 import { Lightning } from "@inco/js/lite";
 import { handleTypes } from "@inco/js";

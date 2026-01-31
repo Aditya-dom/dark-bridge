@@ -4,21 +4,25 @@ import { useState, useEffect, useCallback } from "react";
 import { useAccount, useWalletClient, usePublicClient } from "wagmi";
 import { parseAbi, parseUnits, toHex } from "viem";
 import { useWallet, useConnection } from "@solana/wallet-adapter-react";
-import { PublicKey, Transaction } from "@solana/web3.js";
 import {
     CONFIDENTIAL_BRIDGE_ADDRESS,
     CONFIDENTIAL_TOKEN_ADDRESS,
-    BRIDGE_PROGRAM_ID,
 } from "@/lib/constants";
 import {
     checkVaultExists,
     initializeVault,
-    deriveVaultPda,
     getDefaultTokenMint,
-    getConnection,
     bridgeConfidentialOut,
     getVaultBalance,
 } from "@/lib/solana";
+import { motion, AnimatePresence } from "framer-motion";
+import {
+    Shield,
+    ArrowLeftRight,
+    Lock,
+    Loader2,
+    CheckCircle2
+} from "lucide-react";
 
 // ABI for bridge operations
 const BRIDGE_ABI = parseAbi([
@@ -30,25 +34,44 @@ const BRIDGE_ABI = parseAbi([
 // Direction enum
 type Direction = "base-to-solana" | "solana-to-base";
 
+// Chain configuration
+const CHAINS = {
+    base: { id: "base", name: "Base", icon: "https://avatars.githubusercontent.com/u/108554348", color: "#0052FF" },
+    solana: { id: "solana", name: "Solana", icon: "https://cryptologos.cc/logos/solana-sol-logo.svg", color: "#14f195" },
+};
+
+const DarkSolanaIcon = () => (
+    <svg viewBox="0 0 32 32" className="w-full h-full">
+        <circle cx="16" cy="16" r="16" fill="#000000" />
+        <path d="M10 18.5l2-2h10l-2 2H10zm0-3l2 2h10l-2-2H10zm12-4l-2 2H10l2-2h10z" fill="#22c55e" />
+    </svg>
+);
+
+
+
 export function BridgeForm() {
     const { address: evmAddress, isConnected: isEvmConnected } = useAccount();
+
     const { data: walletClient } = useWalletClient();
     const publicClient = usePublicClient();
     const { publicKey: solanaPublicKey, connected: isSolanaConnected, signTransaction } = useWallet();
     const { connection } = useConnection();
 
-    const [direction, setDirection] = useState<Direction>("base-to-solana");
+    const [direction, setDirection] = useState<Direction>("solana-to-base");
     const [amount, setAmount] = useState("");
     const [loading, setLoading] = useState(false);
     const [txHash, setTxHash] = useState<string | null>(null);
     const [error, setError] = useState<string | null>(null);
     const [status, setStatus] = useState<string>("");
     const [vaultExists, setVaultExists] = useState<boolean | null>(null);
-    const [checkingVault, setCheckingVault] = useState(false);
+    const [, setCheckingVault] = useState(false);
     const [initializingVault, setInitializingVault] = useState(false);
     const [waitingForRelay, setWaitingForRelay] = useState(false);
-    const [relayComplete, setRelayComplete] = useState(false);
-    const [relayTxHash, setRelayTxHash] = useState<string | null>(null);
+    const [, setRelayComplete] = useState(false);
+    const [, setRelayTxHash] = useState<string | null>(null);
+    const [, setIsSwapping] = useState(false);
+
+    const [rotation, setRotation] = useState(0);
 
     // Get the token mint (matches remoteToken from EVM contract)
     const getTokenMint = useCallback(() => {
@@ -62,6 +85,7 @@ export function BridgeForm() {
         } else {
             setVaultExists(null);
         }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [isSolanaConnected, solanaPublicKey]);
 
     const checkVault = async () => {
@@ -80,15 +104,16 @@ export function BridgeForm() {
         }
     };
 
-    const pollForRelayCompletion = useCallback(async (targetChain: "solana" | "base", fromBlock: bigint | null) => {
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    const pollForRelayCompletion = useCallback(async (targetChain: "solana" | "base", _fromBlock: bigint | null) => {
         if (!publicClient || !evmAddress) return;
 
         let attempts = 0;
         const maxAttempts = 60; // 5 minutes (5 seconds * 60)
-        
+
         const poll = async () => {
             attempts++;
-            
+
             if (attempts > maxAttempts) {
                 setWaitingForRelay(false);
                 setStatus("Relay timeout. Check explorer manually.");
@@ -125,7 +150,7 @@ export function BridgeForm() {
                         toBlock: currentBlock,
                     });
 
-                    const userLogs = logs.filter(log => 
+                    const userLogs = logs.filter(log =>
                         log.args.to?.toLowerCase() === evmAddress.toLowerCase()
                     );
 
@@ -175,16 +200,17 @@ export function BridgeForm() {
 
             // Clear status after 3 seconds
             setTimeout(() => setStatus(""), 3000);
-        } catch (err: any) {
-            console.error("Vault init error:", err);
+        } catch (err: unknown) {
+            const error = err as Error & { message?: string };
+            console.error("Vault init error:", error);
             let errorMsg = "Failed to initialize vault";
-            if (err.message?.includes("already exists") || err.message?.includes("already in use")) {
+            if (error.message?.includes("already exists") || error.message?.includes("already in use")) {
                 setVaultExists(true);
                 errorMsg = "Vault already exists";
-            } else if (err.message?.includes("insufficient")) {
+            } else if (error.message?.includes("insufficient")) {
                 errorMsg = "Insufficient SOL for rent. Get devnet SOL from faucet.";
-            } else if (err.message) {
-                errorMsg = err.message.slice(0, 100);
+            } else if (error.message) {
+                errorMsg = error.message.slice(0, 100);
             }
             setError(errorMsg);
         } finally {
@@ -216,7 +242,7 @@ export function BridgeForm() {
                 await handleInitializeVault();
                 // Re-check vault status
                 await checkVault();
-            } catch (err) {
+            } catch {
                 setLoading(false);
                 return;
             }
@@ -236,17 +262,18 @@ export function BridgeForm() {
             } else {
                 await bridgeSolanaToBase();
             }
-        } catch (err: any) {
-            console.error("Bridge error:", err);
+        } catch (err: unknown) {
+            const error = err as Error & { message?: string; shortMessage?: string };
+            console.error("Bridge error:", error);
             let errorMsg = "Transaction failed";
-            if (err.message?.includes("insufficient funds")) {
+            if (error.message?.includes("insufficient funds")) {
                 errorMsg = "Insufficient ETH for gas + Inco fee";
-            } else if (err.message?.includes("user rejected")) {
+            } else if (error.message?.includes("user rejected")) {
                 errorMsg = "Transaction rejected";
-            } else if (err.shortMessage) {
-                errorMsg = err.shortMessage;
-            } else if (err.message) {
-                errorMsg = err.message.slice(0, 150);
+            } else if (error.shortMessage) {
+                errorMsg = error.shortMessage;
+            } else if (error.message) {
+                errorMsg = error.message.slice(0, 150);
             }
             setError(errorMsg);
         } finally {
@@ -296,13 +323,13 @@ export function BridgeForm() {
         setStatus("Waiting for confirmation...");
 
         const receipt = await publicClient.waitForTransactionReceipt({ hash });
-        
+
         console.log("Bridge transaction confirmed:", receipt.transactionHash);
         console.log("Block number:", receipt.blockNumber);
-        
+
         setStatus("Transaction confirmed");
         setWaitingForRelay(true);
-        
+
         // Poll for relay completion
         pollForRelayCompletion("solana", receipt.blockNumber);
     };
@@ -349,7 +376,7 @@ export function BridgeForm() {
         setTxHash(signature);
         setStatus("Transaction confirmed");
         setWaitingForRelay(true);
-        
+
         // Poll for relay completion
         pollForRelayCompletion("base", null);
     };
@@ -359,277 +386,244 @@ export function BridgeForm() {
 
     if (!isEvmConnected) {
         return (
-            <div className="p-6 bg-gradient-to-br from-neutral-900 to-neutral-800 rounded-xl border border-neutral-700 shadow-xl">
-                <h2 className="text-xl font-bold mb-2 bg-gradient-to-r from-blue-400 to-purple-400 bg-clip-text text-transparent">
-                    Confidential Bridge
-                </h2>
-                <p className="text-neutral-400 text-sm">Connect EVM wallet to bridge tokens privately</p>
-            </div>
+            <motion.div
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="glass-card p-8 text-center max-w-md mx-auto"
+            >
+                <div className="w-20 h-20 mx-auto mb-6 rounded-2xl bg-gradient-to-br from-green-500/20 to-green-600/10 border border-green-500/20 flex items-center justify-center">
+                    <Shield className="w-10 h-10 text-green-500" />
+                </div>
+                <h2 className="text-2xl font-bold text-white mb-2">Connect Wallet</h2>
+                <p className="text-gray-400 mb-6">
+                    Connect your EVM and SVM wallet to access the private cross-chain bridge powered by Inco TEE.
+                </p>
+                <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-green-500/10 border border-green-500/20">
+                    <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
+                    <span className="text-sm text-green-400">Waiting for connection...</span>
+                </div>
+            </motion.div>
         );
     }
 
     return (
-        <div className="p-6 bg-gradient-to-br from-neutral-900 to-neutral-800 rounded-xl border border-neutral-700 shadow-xl">
-            <h2 className="text-xl font-bold mb-6 bg-gradient-to-r from-blue-400 to-purple-400 bg-clip-text text-transparent">
-                Confidential Bridge
-            </h2>
+        <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="w-full max-w-lg mx-auto"
+        >
+            {/* Top Badges */}
 
-            {/* Direction Toggle */}
-            <div className="mb-6">
-                <label className="text-sm font-medium text-neutral-300 mb-2 block">Bridge Direction</label>
-                <div className="flex gap-2">
-                    <button
-                        onClick={() => setDirection("base-to-solana")}
-                        className={`flex-1 py-2.5 px-4 rounded-lg text-sm font-semibold transition-all ${
-                            direction === "base-to-solana"
-                                ? "bg-gradient-to-r from-blue-600 to-blue-500 text-white shadow-lg shadow-blue-500/50"
-                                : "bg-neutral-800 text-neutral-400 hover:bg-neutral-700 border border-neutral-700"
-                        }`}
-                    >
-                        Base → Solana
-                    </button>
-                    <button
-                        onClick={() => setDirection("solana-to-base")}
-                        className={`flex-1 py-2.5 px-4 rounded-lg text-sm font-semibold transition-all ${
-                            direction === "solana-to-base"
-                                ? "bg-gradient-to-r from-purple-600 to-purple-500 text-white shadow-lg shadow-purple-500/50"
-                                : "bg-neutral-800 text-neutral-400 hover:bg-neutral-700 border border-neutral-700"
-                        }`}
-                    >
-                        Solana → Base
-                    </button>
-                </div>
-            </div>
 
-            {/* Connection Status */}
-            <div className="mb-6 p-4 bg-neutral-800/50 rounded-lg border border-neutral-700">
-                <div className="text-xs font-medium text-neutral-400 mb-2">Connected Wallets</div>
-                <div className="space-y-2">
-                    <div className="flex items-center gap-2">
-                        <div className={`w-2 h-2 rounded-full ${isEvmConnected ? "bg-green-500" : "bg-red-500"}`}></div>
-                        <span className="text-sm text-neutral-300 font-mono">
-                            Base: {evmAddress ? `${evmAddress.slice(0, 6)}...${evmAddress.slice(-4)}` : "Not connected"}
-                        </span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                        <div className={`w-2 h-2 rounded-full ${isSolanaConnected ? "bg-green-500" : "bg-yellow-500"}`}></div>
-                        <span className="text-sm text-neutral-300 font-mono">
-                            Solana: {solanaPublicKey
-                                ? `${solanaPublicKey.toBase58().slice(0, 6)}...${solanaPublicKey.toBase58().slice(-4)}`
-                                : "Not connected"}
-                        </span>
-                        {isSolanaConnected && checkingVault && (
-                            <span className="text-xs text-neutral-500">(Checking vault...)</span>
-                        )}
-                        {isSolanaConnected && !checkingVault && vaultExists === true && (
-                            <span className="text-xs text-green-400">(Vault ready)</span>
-                        )}
-                        {isSolanaConnected && !checkingVault && vaultExists === false && (
-                            <span className="text-xs text-yellow-400">(Vault needed)</span>
-                        )}
-                    </div>
-                </div>
-            </div>
+            {/* Main Card */}
+            <div className="glass-card p-1">
+                <div className="glass-card-inner p-6 space-y-4">
 
-            {/* Vault Initialization Button (shown only if vault doesn't exist) */}
-            {direction === "base-to-solana" && isSolanaConnected && vaultExists === false && (
-                <div className="mb-4 p-3 bg-yellow-900/30 border border-yellow-700 rounded">
-                    <p className="text-sm text-yellow-200 mb-2">
-                        You need a Solana vault to receive bridged tokens.
-                    </p>
-                    <button
-                        onClick={handleInitializeVault}
-                        disabled={initializingVault}
-                        className="w-full py-2 bg-yellow-600 hover:bg-yellow-500 disabled:bg-neutral-700 disabled:cursor-not-allowed rounded text-sm font-medium transition-colors"
-                    >
-                        {initializingVault ? "Initializing..." : "Initialize Vault (one-time)"}
-                    </button>
-                    <p className="mt-2 text-xs text-yellow-300">
-                        This creates a vault account on Solana. Requires ~0.003 SOL for rent.
-                    </p>
-                </div>
-            )}
+                    {/* Chain Selector */}
+                    {/* Chain Selector */}
+                    {/* Chain Selector */}
+                    <div className="chain-selector p-1.5 bg-[#0B0E14] rounded-3xl border border-white/5">
+                        <div className="grid grid-cols-[1fr,auto,1fr] items-center gap-1">
+                            {/* From Chain */}
+                            <motion.div
+                                className="relative p-4 rounded-2xl bg-[#161B22] w-full h-24 flex flex-row items-center gap-4 transition-colors hover:bg-[#1a201a]"
+                                whileHover={{ scale: 1.01 }}
+                                whileTap={{ scale: 0.99 }}
+                            >
+                                <div className={`w-12 h-12 rounded-xl overflow-hidden shadow-lg ${direction === "base-to-solana" ? "shadow-blue-900/20" : "shadow-purple-900/20"} bg-[#1c2128] flex items-center justify-center border border-white/5`}>
+                                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                                    <img
+                                        src={direction === "base-to-solana" ? CHAINS.base.icon : CHAINS.solana.icon}
+                                        alt="From Chain"
+                                        className="w-8 h-8 object-contain"
+                                    />
+                                </div>
+                                <div className="flex flex-col">
+                                    <span className="text-[10px] font-bold text-gray-500 uppercase tracking-widest mb-0.5">FROM</span>
+                                    <div className="flex items-center gap-2">
+                                        <span className="text-xl font-bold text-white tracking-wide">
+                                            {direction === "base-to-solana" ? CHAINS.base.name : CHAINS.solana.name}
+                                        </span>
+                                    </div>
+                                </div>
+                            </motion.div>
 
-            {/* Amount Input */}
-            <div className="mb-6">
-                <label className="text-sm font-medium text-neutral-300 mb-2 block">Amount (cDARK)</label>
-                <input
-                    type="number"
-                    value={amount}
-                    onChange={(e) => setAmount(e.target.value)}
-                    placeholder="0.0"
-                    min="0"
-                    step="0.1"
-                    className="w-full p-3 bg-neutral-800 border border-neutral-600 rounded-lg text-white placeholder-neutral-500 focus:outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-all"
-                />
-            </div>
+                            {/* Swap Button */}
+                            <div className="relative z-10 -mx-5 h-full flex items-center justify-center">
+                                <motion.button
+                                    onClick={() => {
+                                        setIsSwapping(true);
+                                        setDirection(d => d === "base-to-solana" ? "solana-to-base" : "base-to-solana");
+                                        setRotation(prev => prev + 180 + (Math.floor(Math.random() * 3) + 1) * 360);
+                                        setTimeout(() => setIsSwapping(false), 500);
+                                    }}
+                                    className="w-10 h-10 rounded-full bg-[#1c2128] border border-white/10 flex items-center justify-center hover:border-green-500/50 hover:bg-[#252a25] transition-all shadow-xl z-20"
+                                    animate={{ rotate: rotation }}
+                                    whileHover={{ scale: 1.1 }}
+                                    whileTap={{ scale: 0.9 }}
+                                    transition={{ duration: 0.4, ease: "circOut" }}
+                                >
+                                    <ArrowLeftRight className="w-4 h-4 text-green-500" />
+                                </motion.button>
+                            </div>
 
-            {/* Bridge Button */}
-            <button
-                onClick={handleBridge}
-                disabled={loading || !canBridge || !amount || initializingVault || waitingForRelay}
-                className="w-full py-3.5 bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-500 hover:to-purple-500 disabled:from-neutral-700 disabled:to-neutral-700 disabled:cursor-not-allowed rounded-lg font-semibold transition-all shadow-lg disabled:shadow-none"
-            >
-                {loading
-                    ? status || "Processing..."
-                    : waitingForRelay
-                    ? "Waiting for relayer..."
-                    : initializingVault
-                    ? "Initializing vault..."
-                    : `Bridge ${direction === "base-to-solana" ? "to Solana" : "to Base"}`
-                }
-            </button>
-
-            {/* Auto-init notice */}
-            {direction === "base-to-solana" && isSolanaConnected && vaultExists === false && !initializingVault && (
-                <p className="mt-2 text-xs text-neutral-500 text-center">
-                    Vault will be auto-initialized when you bridge
-                </p>
-            )}
-
-            {/* Warning for Solana wallet */}
-            {direction === "base-to-solana" && !isSolanaConnected && (
-                <div className="mt-4 p-3 bg-yellow-900/30 border border-yellow-700 rounded text-sm text-yellow-200">
-                    Connect your Solana wallet (Phantom/Solflare) to specify the recipient address.
-                </div>
-            )}
-
-            {/* Info Box */}
-            <div className="mt-4 p-4 bg-gradient-to-br from-neutral-800 to-neutral-900 border border-neutral-700 rounded-lg text-xs text-neutral-400 shadow-md">
-                <p className="font-semibold text-neutral-200 mb-2 flex items-center gap-2">
-                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                    </svg>
-                    How it works:
-                </p>
-                {direction === "base-to-solana" ? (
-                    <ul className="space-y-1.5 ml-6">
-                        <li className="flex items-start gap-2">
-                            <span className="text-blue-400 mt-0.5">•</span>
-                            <span>Amount encrypted using Inco TEE (private)</span>
-                        </li>
-                        <li className="flex items-start gap-2">
-                            <span className="text-blue-400 mt-0.5">•</span>
-                            <span>Tokens burned on Base</span>
-                        </li>
-                        <li className="flex items-start gap-2">
-                            <span className="text-blue-400 mt-0.5">•</span>
-                            <span>Relayer mints to your Solana vault</span>
-                        </li>
-                        <li className="flex items-start gap-2">
-                            <span className="text-blue-400 mt-0.5">•</span>
-                            <span>Balance visible only to you</span>
-                        </li>
-                    </ul>
-                ) : (
-                    <ul className="space-y-1.5 ml-6">
-                        <li className="flex items-start gap-2">
-                            <span className="text-purple-400 mt-0.5">•</span>
-                            <span>Tokens burned from your Solana vault</span>
-                        </li>
-                        <li className="flex items-start gap-2">
-                            <span className="text-purple-400 mt-0.5">•</span>
-                            <span>Relayer uses attested decrypt to verify</span>
-                        </li>
-                        <li className="flex items-start gap-2">
-                            <span className="text-purple-400 mt-0.5">•</span>
-                            <span>Tokens minted privately on Base</span>
-                        </li>
-                        <li className="flex items-start gap-2">
-                            <span className="text-purple-400 mt-0.5">•</span>
-                            <span>Balance encrypted with Inco TEE</span>
-                        </li>
-                    </ul>
-                )}
-            </div>
-
-            {/* Waiting for Relay */}
-            {waitingForRelay && !relayComplete && (
-                <div className="mt-4 p-4 bg-blue-900/30 border border-blue-700 rounded">
-                    <div className="flex items-center gap-3">
-                        <div className="animate-spin h-5 w-5 border-2 border-blue-500 border-t-transparent rounded-full"></div>
-                        <div>
-                            <p className="text-sm font-medium text-blue-200">Waiting for relayer</p>
-                            <p className="text-xs text-blue-300 mt-1">
-                                Relayer is processing your cross-chain transfer. This may take 1-2 minutes.
-                            </p>
+                            {/* To Chain */}
+                            <motion.div
+                                className="relative p-4 rounded-2xl bg-[#161B22] w-full h-24 flex flex-row-reverse items-center gap-4 text-right transition-colors hover:bg-[#1a201a]"
+                                whileHover={{ scale: 1.01 }}
+                                whileTap={{ scale: 0.99 }}
+                            >
+                                <div className={`w-12 h-12 rounded-xl overflow-hidden shadow-lg ${direction === "base-to-solana" ? "shadow-purple-900/20" : "shadow-blue-900/20"} bg-[#1c2128] flex items-center justify-center border border-white/5`}>
+                                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                                    <img
+                                        src={direction === "base-to-solana" ? CHAINS.solana.icon : CHAINS.base.icon}
+                                        alt="To Chain"
+                                        className="w-8 h-8 object-contain"
+                                    />
+                                </div>
+                                <div className="flex flex-col items-end">
+                                    <span className="text-[10px] font-bold text-gray-500 uppercase tracking-widest mb-0.5">TO</span>
+                                    <div className="flex items-center gap-2 flex-row-reverse">
+                                        <span className="text-xl font-bold text-white tracking-wide">
+                                            {direction === "base-to-solana" ? CHAINS.solana.name : CHAINS.base.name}
+                                        </span>
+                                        {/* No chevron on TO side usually, or keep it consistent? Image shows icon on right for TO side. */}
+                                    </div>
+                                </div>
+                            </motion.div>
                         </div>
                     </div>
-                </div>
-            )}
 
-            {/* Relay Complete */}
-            {relayComplete && (
-                <div className="mt-4 p-4 bg-green-900/30 border border-green-700 rounded">
-                    <div className="flex items-start gap-3">
-                        <svg className="w-5 h-5 text-green-400 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                        </svg>
-                        <div className="flex-1">
-                            <p className="text-sm font-medium text-green-200">Tokens minted successfully</p>
-                            <p className="text-xs text-green-300 mt-1">
-                                {direction === "base-to-solana" 
-                                    ? "Your tokens have been minted on Solana"
-                                    : "Your tokens have been minted on Base"
-                                }
-                            </p>
-                            {relayTxHash && (
-                                <a
-                                    href={`https://sepolia.basescan.org/tx/${relayTxHash}`}
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                    className="text-xs text-blue-400 hover:underline mt-2 inline-block"
-                                >
-                                    View mint transaction
-                                </a>
+                    {/* Amount Input */}
+                    <div className="input-dark p-5">
+                        <div className="flex items-center justify-between">
+                            <input
+                                type="number"
+                                value={amount}
+                                onChange={(e) => setAmount(e.target.value)}
+                                placeholder="0"
+                                className="w-full bg-transparent text-4xl font-light text-white placeholder-gray-700 focus:outline-none"
+                            />
+                            <div className="token-badge flex items-center gap-2 shrink-0">
+                                <div className="w-6 h-6 rounded-full overflow-hidden">
+                                    <DarkSolanaIcon />
+                                </div>
+                                <span className="font-semibold text-white">cDARK</span>
+                            </div>
+                        </div>
+                        <div className="flex items-center justify-between mt-3">
+                            <span className="text-sm text-gray-600">Balance: 0.00 cDARK</span>
+                            <button className="text-xs font-semibold text-green-500 hover:text-green-400 uppercase tracking-wider">
+                                MAX
+                            </button>
+                        </div>
+                    </div>
+
+                    {/* Info Box */}
+                    <div className="info-box flex items-start gap-3">
+                        <Lock className="w-5 h-5 text-green-500 shrink-0 mt-0.5" />
+                        <div className="text-sm text-green-500/80 leading-relaxed">
+                            {error ? (
+                                <span className="text-red-400">{error}</span>
+                            ) : status ? (
+                                <span>{status}</span>
+                            ) : waitingForRelay ? (
+                                <span>Waiting for relayer to complete cross-chain transfer...</span>
+                            ) : (
+                                <span>Transaction encrypted via INCO Network. Amount and addresses hidden from validators.</span>
                             )}
                         </div>
                     </div>
-                </div>
-            )}
 
-            {/* Success */}
-            {txHash && !waitingForRelay && !relayComplete && (
-                <div className="mt-4 p-3 bg-green-900/30 border border-green-700 rounded text-sm">
-                    <p className="text-green-400 mb-1">Transaction submitted!</p>
-                    {direction === "base-to-solana" ? (
-                        <>
-                            <a
-                                href={`https://sepolia.basescan.org/tx/${txHash}`}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="text-blue-400 hover:underline break-all text-xs"
-                            >
-                                View on BaseScan
-                            </a>
-                            <p className="mt-2 text-neutral-400 text-xs">
-                                The relayer will complete the transfer to Solana. This may take 1-2 minutes.
-                            </p>
-                        </>
-                    ) : (
-                        <>
-                            <a
-                                href={`https://explorer.solana.com/tx/${txHash}?cluster=devnet`}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="text-blue-400 hover:underline break-all text-xs"
-                            >
-                                View on Solana Explorer
-                            </a>
-                            <p className="mt-2 text-neutral-400 text-xs">
-                                The relayer will use attested decrypt and mint on Base. This may take 1-2 minutes.
-                            </p>
-                        </>
+                    {/* TX Hash */}
+                    {txHash && !waitingForRelay && (
+                        <div className="text-xs text-gray-500 bg-black/20 rounded-lg p-3 break-all">
+                            TX: {txHash}
+                        </div>
                     )}
-                </div>
-            )}
 
-            {/* Error */}
-            {error && (
-                <div className="mt-4 p-3 bg-red-900/30 border border-red-800 rounded text-sm text-red-300 whitespace-pre-line">
-                    {error}
+                    {/* Initialize Vault Button (if needed) */}
+                    <AnimatePresence>
+                        {direction === "base-to-solana" && isSolanaConnected && vaultExists === false && (
+                            <motion.button
+                                initial={{ opacity: 0, height: 0 }}
+                                animate={{ opacity: 1, height: "auto" }}
+                                exit={{ opacity: 0, height: 0 }}
+                                onClick={handleInitializeVault}
+                                disabled={initializingVault}
+                                className="w-full py-3 rounded-xl bg-yellow-500/10 border border-yellow-500/20 text-yellow-500 font-medium text-sm uppercase tracking-wider hover:bg-yellow-500/20 transition-colors disabled:opacity-50"
+                            >
+                                {initializingVault ? (
+                                    <span className="flex items-center justify-center gap-2">
+                                        <Loader2 className="w-4 h-4 animate-spin" />
+                                        Initializing...
+                                    </span>
+                                ) : (
+                                    "Initialize Solana Vault"
+                                )}
+                            </motion.button>
+                        )}
+                    </AnimatePresence>
+
+                    {/* Main Action Button */}
+                    <motion.button
+                        onClick={handleBridge}
+                        disabled={loading || !canBridge || !amount || initializingVault || waitingForRelay}
+                        className="w-full py-4 rounded-2xl bg-[#0B0E14] border border-white/5 text-white font-medium text-lg tracking-wide relative overflow-hidden group disabled:opacity-50 disabled:cursor-not-allowed"
+                        whileHover={{ scale: 1.01 }}
+                        whileTap={{ scale: 0.99 }}
+                    >
+                        {/* Shimmer effect on hover */}
+                        <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/5 to-transparent -translate-x-full group-hover:translate-x-full transition-transform duration-1000" />
+
+                        <span className="relative z-10 flex items-center justify-center gap-2">
+                            {status === 'success' ? (
+                                <>
+                                    <CheckCircle2 className="w-5 h-5 text-green-500" />
+                                    <span className="text-green-500">Bridge Complete</span>
+                                </>
+                            ) : loading ? (
+                                <>
+                                    <Loader2 className="w-5 h-5 animate-spin text-green-500" />
+                                    <span className="text-green-500 animate-pulse">Running TEE Encrypted Transaction...</span>
+                                </>
+                            ) : waitingForRelay ? (
+                                <>
+                                    <Loader2 className="w-5 h-5 animate-spin text-green-500" />
+                                    <span className="text-green-500 animate-pulse">Relaying Privately...</span>
+                                </>
+                            ) : error ? (
+                                error
+                            ) : (!amount || parseFloat(amount) <= 0) ? (
+                                <>
+                                    <Shield className="w-5 h-5 text-gray-500" />
+                                    <span className="text-gray-500">Enter Amount</span>
+                                </>
+                            ) : !canBridge ? (
+                                "Connect Wallets"
+                            ) : (
+                                <>
+                                    <motion.div
+                                        animate={{
+                                            scale: [1, 1.1, 1],
+                                            filter: ["drop-shadow(0 0 0px #22c55e)", "drop-shadow(0 0 8px #22c55e)", "drop-shadow(0 0 0px #22c55e)"]
+                                        }}
+                                        transition={{ duration: 2, repeat: Infinity }}
+                                        className="relative"
+                                    >
+                                        <Lock className="w-5 h-5 text-green-500" />
+                                    </motion.div>
+                                    <span className="text-green-500 font-bold group-hover:text-green-400 transition-colors uppercase tracking-widest text-sm">
+                                        Bridge Privately via Inco
+                                    </span>
+                                </>
+                            )}
+                        </span>
+                    </motion.button>
                 </div>
-            )}
-        </div>
+            </div>
+
+
+        </motion.div>
     );
 }
