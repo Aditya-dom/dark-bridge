@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
+import Link from "next/link";
 import { motion, AnimatePresence } from "framer-motion";
 import { Menu, X, Droplets, Vault, Github, FileText, Settings } from "lucide-react";
 import { Faucet } from "./Faucet";
@@ -76,7 +77,7 @@ export function MenuDropdown() {
                         animate={{ opacity: 1, y: 0, scale: 1 }}
                         exit={{ opacity: 0, y: -10, scale: 0.95 }}
                         transition={{ duration: 0.2, ease: "easeOut" }}
-                        className="absolute right-0 top-14 w-[380px] max-h-[80vh] overflow-auto z-50"
+                        className="absolute right-0 top-14 w-[calc(100vw-32px)] md:w-[380px] max-h-[80vh] overflow-auto z-50"
                     >
                         {/* Dropdown Container */}
                         <div className="glass-card p-1 shadow-2xl shadow-black/50">
@@ -105,13 +106,13 @@ export function MenuDropdown() {
                                         <Github className="w-4 h-4" />
                                         <span>GitHub</span>
                                     </a>
-                                    <a
-                                        href="#"
+                                    <Link
+                                        href="/docs"
                                         className="quick-link-btn"
                                     >
                                         <FileText className="w-4 h-4" />
                                         <span>Docs</span>
-                                    </a>
+                                    </Link>
                                 </div>
 
                                 {/* Divider with Label */}

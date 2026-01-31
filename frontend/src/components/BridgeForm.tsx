@@ -416,17 +416,17 @@ export function BridgeForm() {
 
 
             {/* Main Card */}
-            <div className="glass-card p-1">
-                <div className="glass-card-inner p-6 space-y-4">
+            <div className="glass-card p-0 md:p-1">
+                <div className="glass-card-inner p-4 md:p-6 space-y-4">
 
                     {/* Chain Selector */}
                     {/* Chain Selector */}
                     {/* Chain Selector */}
                     <div className="chain-selector p-1.5 bg-[#0B0E14] rounded-3xl border border-white/5">
-                        <div className="grid grid-cols-[1fr,auto,1fr] items-center gap-1">
+                        <div className="flex flex-col md:grid md:grid-cols-[1fr,auto,1fr] items-center gap-1">
                             {/* From Chain */}
                             <motion.div
-                                className="relative p-4 rounded-2xl bg-[#161B22] w-full h-24 flex flex-row items-center gap-4 transition-colors hover:bg-[#1a201a]"
+                                className="relative p-3 md:p-4 rounded-2xl bg-[#161B22] w-full h-20 md:h-24 flex flex-row items-center gap-4 transition-colors hover:bg-[#1a201a]"
                                 whileHover={{ scale: 1.01 }}
                                 whileTap={{ scale: 0.99 }}
                             >
@@ -449,7 +449,7 @@ export function BridgeForm() {
                             </motion.div>
 
                             {/* Swap Button */}
-                            <div className="relative z-10 -mx-5 h-full flex items-center justify-center">
+                            <div className="relative z-10 -my-3 md:-my-0 md:-mx-5 h-full flex items-center justify-center">
                                 <motion.button
                                     onClick={() => {
                                         setIsSwapping(true);
@@ -469,7 +469,7 @@ export function BridgeForm() {
 
                             {/* To Chain */}
                             <motion.div
-                                className="relative p-4 rounded-2xl bg-[#161B22] w-full h-24 flex flex-row-reverse items-center gap-4 text-right transition-colors hover:bg-[#1a201a]"
+                                className="relative p-3 md:p-4 rounded-2xl bg-[#161B22] w-full h-20 md:h-24 flex flex-row-reverse items-center gap-4 text-right transition-colors hover:bg-[#1a201a]"
                                 whileHover={{ scale: 1.01 }}
                                 whileTap={{ scale: 0.99 }}
                             >
@@ -495,14 +495,14 @@ export function BridgeForm() {
                     </div>
 
                     {/* Amount Input */}
-                    <div className="input-dark p-5">
+                    <div className="input-dark p-4 md:p-5">
                         <div className="flex items-center justify-between">
                             <input
                                 type="number"
                                 value={amount}
                                 onChange={(e) => setAmount(e.target.value)}
                                 placeholder="0"
-                                className="w-full bg-transparent text-4xl font-light text-white placeholder-gray-700 focus:outline-none"
+                                className="w-full bg-transparent text-3xl md:text-4xl font-light text-white placeholder-gray-700 focus:outline-none"
                             />
                             <div className="token-badge flex items-center gap-2 shrink-0">
                                 <div className="w-6 h-6 rounded-full overflow-hidden">

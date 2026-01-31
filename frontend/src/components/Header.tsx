@@ -17,14 +17,14 @@ export function Header() {
     const { isConnected: isEvmConnected } = useAccount();
 
     return (
-        <header className="relative z-50 flex items-center justify-between py-4 px-6">
+        <header className="relative z-50 flex items-center justify-between py-3 px-4 md:py-4 md:px-6">
             {/* Logo */}
             <div className="flex items-center gap-3">
-                <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-green-500/20 to-green-600/10 border border-green-500/20 flex items-center justify-center">
+                <div className="w-10 h-10 md:w-12 md:h-12 rounded-xl bg-gradient-to-br from-green-500/20 to-green-600/10 border border-green-500/20 flex items-center justify-center">
                     <Shield className="w-6 h-6 text-green-500" />
                 </div>
                 <div>
-                    <h1 className="text-xl font-bold tracking-wider text-white">DARKBRIDGE</h1>
+                    <h1 className="text-lg md:text-xl font-bold tracking-wider text-white">DARKBRIDGE</h1>
                     <p className="text-[10px] text-gray-500 tracking-[0.2em] uppercase font-medium">Private Cross-Chain</p>
                 </div>
             </div>

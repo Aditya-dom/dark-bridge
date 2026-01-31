@@ -11,10 +11,10 @@ export default function Home() {
             <BackgroundCanvas />
 
             {/* Content */}
-            <div className="relative z-10 min-h-screen pb-20 pt-4">
+            <div className="relative z-10 min-h-screen pb-20 pt-2 md:pt-4">
                 <Header />
 
-                <div className="max-w-6xl mx-auto px-4">
+                <div className="max-w-6xl mx-auto px-3 md:px-4">
                     {/* Main Content - Bridge Form Only */}
                     <div className="mt-8 lg:mt-16">
                         <BridgeForm />
