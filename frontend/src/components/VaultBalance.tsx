@@ -259,10 +259,14 @@ export function VaultBalance() {
 
             // Step 2: Use Inco SDK for attested decrypt with Aggressive Retry Logic
             // The Covalidator API *will* lag behind Solana. We must wait for it.
+            // Inco team recommends: 1-2 second backoff before retry, exponential growth
 
             let attempts = 0;
-            const maxAttempts = 10; // Try for ~40 seconds
+            const maxAttempts = 15; // Increased for better tolerance of TEE sync delays
             let success = false;
+            const baseDelayMs = 1500; // Start with 1.5s as recommended by Inco
+            const maxDelayMs = 10000; // Cap at 10s
+            const backoffFactor = 1.5;
 
             while (attempts < maxAttempts && !success) {
                 attempts++;
@@ -293,17 +297,25 @@ export function VaultBalance() {
 
                     const errString = JSON.stringify(decError) + (decError.message || "");
                     const isPermissionError = errString.includes("not allowed");
+                    const isRateLimitError = errString.includes("rate limit") || errString.includes("too many");
 
-                    // If it's a permission error, it means Inco hasn't seen the Solana TX yet.
-                    // We MUST wait and retry.
-                    if (isPermissionError && attempts < maxAttempts) {
-                        console.log("Permission not yet synced, waiting 4s...");
-                        await new Promise(r => setTimeout(r, 4000)); // Wait 4s
+                    // Calculate exponential backoff delay with jitter
+                    const exponentialDelay = Math.min(
+                        baseDelayMs * Math.pow(backoffFactor, attempts - 1),
+                        maxDelayMs
+                    );
+                    // Add ±200ms jitter to prevent thundering herd
+                    const jitter = Math.random() * 400 - 200;
+                    const delayMs = Math.max(1000, exponentialDelay + jitter);
+
+                    // If it's a permission/rate error, it means Inco hasn't synced yet
+                    if ((isPermissionError || isRateLimitError) && attempts < maxAttempts) {
+                        console.log(`TEE not synced yet, waiting ${Math.round(delayMs)}ms before retry...`);
+                        await new Promise(r => setTimeout(r, delayMs));
                     } else {
-                        // If it's another error (e.g. signature rejected), fail immediately
-                        // or if we've run out of attempts
+                        // If it's another error or we've run out of attempts
                         if (attempts === maxAttempts) throw decError;
-                        await new Promise(r => setTimeout(r, 2000)); // Generic retry wait
+                        await new Promise(r => setTimeout(r, delayMs));
                     }
                 }
             }

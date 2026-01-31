@@ -303,21 +303,53 @@ function readU128LE(buffer: Uint8Array): bigint {
     return result;
 }
 
-// Simple decrypt via Inco API
+// Simple decrypt via Inco API with exponential backoff
+// Inco team recommends: 1-2 second backoff for TEE sync delays
 async function requestAttestedDecryptSimple(handle: bigint) {
-    try {
-        const response = await fetch(`https://grpc.solana-devnet.alpha.devnet.inco.org/crypto/decrypt`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ handle: handle.toString() }),
-        });
-        if (response.ok) {
-            const data = await response.json();
-            return {
-                handle: handle.toString(),
-                plaintext: BigInt(data.plaintext || data.value || 0),
-            };
+    const maxAttempts = 5;
+    const baseDelayMs = 1500; // Start at 1.5s as recommended
+    const backoffFactor = 1.5;
+    const maxDelayMs = 8000;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        try {
+            const response = await fetch(`https://grpc.solana-devnet.alpha.devnet.inco.org/crypto/decrypt`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ handle: handle.toString() }),
+            });
+            if (response.ok) {
+                const data = await response.json();
+                const plaintext = BigInt(data.plaintext || data.value || 0);
+                if (plaintext > 0n) {
+                    return {
+                        handle: handle.toString(),
+                        plaintext,
+                    };
+                }
+            }
+            
+            // Check for permission/sync errors that warrant retry
+            const errorText = await response.text().catch(() => '');
+            const isRetryable = errorText.includes('not allowed') || 
+                               errorText.includes('rate limit') ||
+                               response.status === 429;
+            
+            if (isRetryable && attempt < maxAttempts) {
+                const delay = Math.min(baseDelayMs * Math.pow(backoffFactor, attempt - 1), maxDelayMs);
+                const jitter = Math.random() * 400 - 200; // ±200ms jitter
+                console.log(`   Decrypt attempt ${attempt} failed (TEE sync), retrying in ${Math.round(delay + jitter)}ms...`);
+                await new Promise(r => setTimeout(r, delay + jitter));
+                continue;
+            }
+        } catch {
+            if (attempt < maxAttempts) {
+                const delay = Math.min(baseDelayMs * Math.pow(backoffFactor, attempt - 1), maxDelayMs);
+                console.log(`   Decrypt attempt ${attempt} error, retrying in ${Math.round(delay)}ms...`);
+                await new Promise(r => setTimeout(r, delay));
+                continue;
+            }
         }
-    } catch { }
+    }
     return null;
 }
