@@ -144,6 +144,58 @@ const CONFIDENTIAL_BRIDGE_FULL_ABI = [
     },
 ] as const;
 
+// === TX Hash Mapping Store ===
+// Maps Base TX hash -> Solana TX signature
+const txHashMap: Map<string, string> = new Map();
+
+// HTTP Server to serve TX hash mappings
+const HTTP_PORT = 3456;
+
+function startHttpServer() {
+    const server = Bun.serve({
+        port: HTTP_PORT,
+        fetch(req) {
+            const url = new URL(req.url);
+            
+            // CORS headers
+            const headers = {
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "GET, OPTIONS",
+                "Access-Control-Allow-Headers": "Content-Type",
+                "Content-Type": "application/json",
+            };
+            
+            if (req.method === "OPTIONS") {
+                return new Response(null, { headers });
+            }
+            
+            // GET /tx/:baseTxHash - Get Solana TX for a Base TX
+            if (url.pathname.startsWith("/tx/")) {
+                const baseTxHash = url.pathname.slice(4).toLowerCase();
+                const solanaTxHash = txHashMap.get(baseTxHash);
+                
+                if (solanaTxHash) {
+                    return new Response(JSON.stringify({ solanaTxHash }), { headers });
+                } else {
+                    return new Response(JSON.stringify({ error: "Not found" }), { status: 404, headers });
+                }
+            }
+            
+            // GET /all - List all mappings
+            if (url.pathname === "/all") {
+                const mappings = Object.fromEntries(txHashMap);
+                return new Response(JSON.stringify(mappings), { headers });
+            }
+            
+            return new Response(JSON.stringify({ status: "ok", mappings: txHashMap.size }), { headers });
+        },
+    });
+    
+    console.log(`📡 HTTP server running on http://localhost:${HTTP_PORT}`);
+    console.log(`   Query: GET /tx/<baseTxHash> -> { solanaTxHash: "..." }`);
+    return server;
+}
+
 console.log("=== Privacy Relayer (Base → Solana) ===");
 console.log(`EVM Signer: ${evmAccount.address}`);
 console.log(`Confidential Bridge: ${CONFIDENTIAL_BRIDGE_ADDRESS}`);
@@ -244,12 +296,15 @@ function bytes32ToPublicKey(bytes32: Hex): PublicKey {
 /**
  * Send relay_receive_confidential instruction to Solana.
  * Factored out to avoid code duplication between plaintext and legacy event flows.
+ * Returns the Solana signature on success, null on failure.
+ * If baseTxHash is provided, stores the mapping in txHashMap.
  */
 async function sendRelayConfidentialReceive(
     recipientPubkey: PublicKey,
     encryptedAmountBytes: Uint8Array,
-    baseSender: Uint8Array
-): Promise<boolean> {
+    baseSender: Uint8Array,
+    baseTxHash?: string
+): Promise<string | null> {
     const config = CONFIGS["testnet-alpha"];
     const rpc = createSolanaRpc(config.solana.rpcUrl);
     const payer = await getSolanaCliConfigKeypairSigner();
@@ -303,7 +358,7 @@ async function sendRelayConfidentialReceive(
         console.log(`   Owner: ${recipientPubkey.toBase58()}`);
         console.log(`   Token Mint: ${tokenMint.toBase58()}`);
         console.log(`\n   To initialize, call initialize_confidential_vault on Solana.`);
-        return false;
+        return null;
     }
 
     // Build the relay_receive_confidential instruction
@@ -365,14 +420,21 @@ async function sendRelayConfidentialReceive(
         console.log(`   Transaction confirmed!`);
         console.log(`   Signature: ${signature}`);
         console.log(`   Explorer: https://explorer.solana.com/tx/${signature}?cluster=devnet`);
-        return true;
+        
+        // Store the mapping if baseTxHash was provided
+        if (baseTxHash) {
+            txHashMap.set(baseTxHash.toLowerCase(), signature);
+            console.log(`   📋 Stored mapping: ${baseTxHash.slice(0, 20)}... -> ${signature.slice(0, 20)}...`);
+        }
+        
+        return signature;
     } catch (txError: any) {
         console.error(`   Transaction failed: ${txError.message}`);
         if (txError.logs) {
             console.error(`   Logs:`);
             txError.logs.forEach((log: string) => console.error(`      ${log}`));
         }
-        return false;
+        return null;
     }
 }
 
@@ -532,13 +594,15 @@ async function relayConfidentialToSolana(txHash: string): Promise<boolean> {
             console.log(`      ✅ Solana ciphertext: ${solanaCiphertext.slice(0, 40)}...`);
             console.log(`      ✅ Ciphertext length: ${encryptedAmountBytes.length} bytes`);
 
-            // Build and send Solana transaction
+            // Build and send Solana transaction - pass txHash to store mapping
             const baseSender = toBytes(evmAccount.address).slice(0, 20);
-            return await sendRelayConfidentialReceive(
+            const solSig = await sendRelayConfidentialReceive(
                 recipientPubkey,
                 encryptedAmountBytes,
-                baseSender
+                baseSender,
+                txHash  // Pass Base TX hash to store mapping
             );
+            return solSig !== null;
         }
 
         // 3. Fall back to legacy event (encrypted amount - requires attestedReveal)
@@ -590,12 +654,14 @@ async function relayConfidentialToSolana(txHash: string): Promise<boolean> {
 
         console.log(`   ✅ Solana ciphertext ready: ${encryptedAmountBytes.length} bytes`);
 
-        // Use the helper function for sending to Solana
-        return await sendRelayConfidentialReceive(
+        // Use the helper function for sending to Solana - pass txHash to store mapping
+        const solSig = await sendRelayConfidentialReceive(
             recipientPubkey,
             encryptedAmountBytes,
-            baseSender
+            baseSender,
+            txHash  // Pass Base TX hash to store mapping
         );
+        return solSig !== null;
 
     } catch (error: any) {
         console.error(`   Error: ${error.message}`);
@@ -612,6 +678,9 @@ async function relayConfidentialToSolana(txHash: string): Promise<boolean> {
 async function monitorMode() {
     console.log("\n=== Monitor Mode ===");
     console.log("Watching for ConfidentialBridgeInitiated events on Base...\n");
+
+    // Start HTTP server for TX hash lookups
+    startHttpServer();
 
     let lastBlock = await basePublicClient.getBlockNumber();
     console.log(`Starting from block: ${lastBlock}`);
@@ -645,8 +714,6 @@ async function monitorMode() {
                         } else if (decoded.eventName === "ConfidentialBridgeInitiatedWithPlaintext") {
                             console.log("    ✅ Confidential bridge event detected (with plaintext)!");
                             await relayConfidentialToSolana(log.transactionHash!);
-                        } else {
-                            console.log(`   Other event type: ${decoded.eventName}`);
                         }
                     } catch (decodeError: any) {
                         console.log(`   Failed to decode event: ${decodeError.message}`);

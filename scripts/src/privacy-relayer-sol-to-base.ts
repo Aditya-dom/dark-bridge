@@ -61,8 +61,8 @@ if (!EVM_PRIVATE_KEY) {
 const evmAccount = privateKeyToAccount(EVM_PRIVATE_KEY as `0x${string}`);
 
 // Deployed addresses (from base/deployments/base_sepolia.json and .cdark-deployment.json)
-const CONFIDENTIAL_BRIDGE_ADDRESS = "0x6f7c0515daF8459c0eBf35DB0411fC665fEf838a" as Address;
-const CONFIDENTIAL_TOKEN_ADDRESS = "0x06eb490068dFdc3b071A89381e06032B9E657906" as Address;
+const CONFIDENTIAL_BRIDGE_ADDRESS = "0xD705858A979a4ab42e7a2e43e8CcC726Dbd87369" as Address;
+const CONFIDENTIAL_TOKEN_ADDRESS = "0xFBAD5A940d89e504C5f8C9e0fC3A976A82334565" as Address;
 
 // Bridge Program ID
 const BRIDGE_PROGRAM_ID = new PublicKey("EEMKRm1ANMBZHS6yEi67bKVuZDPhztQHVWBzoFnoVbh9");
@@ -406,7 +406,7 @@ async function requestAttestedDecrypt(
         throw new Error(`Attested decrypt failed: ${errorText}`);
     }
 
-    const data = await response.json();
+    const data = await response.json() as any;
 
     if (!data.plaintext) {
         throw new Error("No plaintext in attested decrypt response");
@@ -441,7 +441,7 @@ async function requestAttestedDecryptSimple(handle: bigint): Promise<AttestedDec
             return null;
         }
 
-        const data = await response.json();
+        const data = await response.json() as any;
         return {
             handle: handle.toString(),
             plaintext: BigInt(data.plaintext || data.value || 0),
@@ -666,7 +666,7 @@ async function relayConfidentialToBase(txSignature: string): Promise<boolean> {
         } else {
             // Try to decrypt the handle - the owner granted access when bridging
             const isOwner = ownerPubkey ? ownerPubkey.equals(decryptionWallet.publicKey) : false;
-            
+
             try {
                 console.log(`   🔓 Attempting to decrypt handle...`);
 
@@ -707,15 +707,43 @@ async function relayConfidentialToBase(txSignature: string): Promise<boolean> {
         // This encrypts the plaintext on Base using Inco TEE
         console.log("   Minting on Base via confidentialMintForDemo...");
 
-        const hash = await baseWalletClient.writeContract({
-            address: CONFIDENTIAL_TOKEN_ADDRESS,
-            abi: CONFIDENTIAL_TOKEN_ABI,
-            functionName: "confidentialMintForDemo",
-            args: [destinationAddress, amountToMint],
-            value: incoFee,
-        });
+        // Retry with fresh nonce up to 3 times
+        let hash: `0x${string}` | null = null;
+        let lastError: any = null;
+        
+        for (let attempt = 1; attempt <= 3; attempt++) {
+            try {
+                // Get fresh nonce on each attempt
+                const nonce = await basePublicClient.getTransactionCount({
+                    address: evmAccount.address,
+                });
+                console.log(`   Attempt ${attempt}: Using nonce ${nonce}`);
 
-        console.log(`   ✅ Minted on Base: ${hash}`);
+                hash = await baseWalletClient.writeContract({
+                    address: CONFIDENTIAL_TOKEN_ADDRESS,
+                    abi: CONFIDENTIAL_TOKEN_ABI,
+                    functionName: "confidentialMintForDemo",
+                    args: [destinationAddress, amountToMint],
+                    value: incoFee,
+                    nonce: nonce,
+                });
+                
+                console.log(`   ✅ Minted on Base: ${hash}`);
+                break; // Success, exit retry loop
+            } catch (txError: any) {
+                lastError = txError;
+                if (txError.message?.includes("nonce") && attempt < 3) {
+                    console.log(`   ⚠️ Nonce error, retrying in 2s...`);
+                    await new Promise(r => setTimeout(r, 2000));
+                } else {
+                    throw txError;
+                }
+            }
+        }
+
+        if (!hash) {
+            throw lastError || new Error("Failed to send transaction after retries");
+        }
 
         // 7. Wait for confirmation
         const receipt = await basePublicClient.waitForTransactionReceipt({ hash });
@@ -771,17 +799,19 @@ async function monitorMode() {
 
                         if (tx) {
                             const logs = tx.meta?.logMessages || [];
+                            const plaintextEvent = parseConfidentialBridgeOutPlaintextEvent(logs);
                             const regularEvent = parseConfidentialBridgeOutEvent(logs);
                             const privateEvent = parseRelayedPrivateBridgeOutEvent(logs);
 
-                            if (regularEvent) {
+                            if (plaintextEvent) {
+                                console.log("   📦 Confidential bridge event (plaintext) detected!");
+                                await relayConfidentialToBase(sig.signature);
+                            } else if (regularEvent) {
                                 console.log("   📦 Confidential bridge event detected!");
                                 await relayConfidentialToBase(sig.signature);
                             } else if (privateEvent) {
                                 console.log("   🔒 PRIVATE bridge event detected (sender hidden)!");
                                 await relayConfidentialToBase(sig.signature);
-                            } else {
-                                console.log("   ℹ️ Not a confidential bridge event");
                             }
                         }
                     }
