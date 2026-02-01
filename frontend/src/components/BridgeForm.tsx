@@ -556,7 +556,7 @@ export function BridgeForm() {
                 </div>
                 <h2 className="text-2xl font-bold text-white mb-2">Connect Wallet</h2>
                 <p className="text-gray-400 mb-6">
-                    Connect your EVM and SVM wallet to access the private cross-chain bridge powered by Inco TEE.
+                    Connect your SVM and EVM wallet to access the private cross-chain bridge powered by Inco TEE.
                 </p>
                 <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-green-500/10 border border-green-500/20">
                     <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />

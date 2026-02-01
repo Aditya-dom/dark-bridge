@@ -70,10 +70,19 @@ const BRIDGE_PROGRAM_ID = new PublicKey("EEMKRm1ANMBZHS6yEi67bKVuZDPhztQHVWBzoFn
 // Inco Lightning Program ID
 const INCO_LIGHTNING_ID = new PublicKey("5sjEbPiqgZrYwR31ahR6Uk9wf5awoX61YGg7jExQSwaj");
 
-// Load Solana wallet for grant_handle_access
-const keypairPath = path.join(process.env.HOME || "", ".config/solana/id.json");
-const keypairData = JSON.parse(fs.readFileSync(keypairPath, "utf-8"));
-const solanaWallet = Keypair.fromSecretKey(new Uint8Array(keypairData));
+// Load Solana wallet - support both env var and file
+let solanaWallet: Keypair;
+if (process.env.SOLANA_PRIVATE_KEY) {
+    // Parse from env var (JSON array format)
+    const keypairData = JSON.parse(process.env.SOLANA_PRIVATE_KEY);
+    solanaWallet = Keypair.fromSecretKey(new Uint8Array(keypairData), { skipValidation: true });
+    console.log(`🔑 Loaded Solana wallet from SOLANA_PRIVATE_KEY env var: ${solanaWallet.publicKey.toBase58()}`);
+} else {
+    // Fall back to file
+    const keypairPath = path.join(process.env.HOME || "", ".config/solana/id.json");
+    const keypairData = JSON.parse(fs.readFileSync(keypairPath, "utf-8"));
+    solanaWallet = Keypair.fromSecretKey(new Uint8Array(keypairData), { skipValidation: true });
+}
 
 // Optional: Load a separate keypair for decryption (the vault owner's keypair)
 // This allows the relayer to decrypt handles owned by a different wallet
@@ -713,9 +722,10 @@ async function relayConfidentialToBase(txSignature: string): Promise<boolean> {
         
         for (let attempt = 1; attempt <= 3; attempt++) {
             try {
-                // Get fresh nonce on each attempt
+                // Get fresh nonce on each attempt - use "pending" to include mempool txs
                 const nonce = await basePublicClient.getTransactionCount({
                     address: evmAccount.address,
+                    blockTag: "pending",
                 });
                 console.log(`   Attempt ${attempt}: Using nonce ${nonce}`);
 

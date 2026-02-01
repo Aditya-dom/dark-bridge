@@ -61,7 +61,7 @@ import { privateKeyToAccount } from "viem/accounts";
 import { Connection, PublicKey, Keypair, SystemProgram, TransactionInstruction } from "@solana/web3.js";
 
 import { CONFIGS } from "@internal/constants";
-import { buildAndSendTransaction, getSolanaCliConfigKeypairSigner, getIdlConstant } from "@internal/sol";
+import { buildAndSendTransaction, getSolanaCliConfigKeypairSigner, getIdlConstant, getSolanaWeb3Keypair } from "@internal/sol";
 
 // Inco SDKs for cross-chain re-encryption
 import { Lightning } from "@inco/js/lite";
@@ -147,6 +147,10 @@ const CONFIDENTIAL_BRIDGE_FULL_ABI = [
 // === TX Hash Mapping Store ===
 // Maps Base TX hash -> Solana TX signature
 const txHashMap: Map<string, string> = new Map();
+
+// === Processed TX Deduplication ===
+// Tracks Base TX hashes we've already processed to prevent duplicates
+const processedTxHashes: Set<string> = new Set();
 
 // HTTP Server to serve TX hash mappings
 const HTTP_PORT = 3456;
@@ -384,12 +388,9 @@ async function sendRelayConfidentialReceive(
     console.log(`      Encrypted amount: ${encryptedAmountBytes.length} bytes`);
     console.log(`      Base sender: 0x${Buffer.from(baseSender).toString("hex")}`);
 
-    // Create instruction with accounts
-    const payerKeypair = Keypair.fromSecretKey(
-        Uint8Array.from(JSON.parse(require("fs").readFileSync(
-            require("os").homedir() + "/.config/solana/id.json", "utf-8"
-        )))
-    );
+    // Create instruction with accounts - use getSolanaWeb3Keypair() which handles SOLANA_PRIVATE_KEY
+    const payerKeypair = getSolanaWeb3Keypair();
+    console.log(`   🔑 Using Solana payer: ${payerKeypair.publicKey.toBase58()}`);
 
     const instruction = new TransactionInstruction({
         programId: BRIDGE_PROGRAM_ID,
@@ -699,6 +700,14 @@ async function monitorMode() {
                 });
 
                 for (const log of logs) {
+                    const txHash = log.transactionHash!.toLowerCase();
+                    
+                    // Skip if already processed
+                    if (processedTxHashes.has(txHash)) {
+                        console.log(`[${new Date().toISOString()}] Skipping already processed TX: ${txHash.slice(0, 20)}...`);
+                        continue;
+                    }
+
                     console.log(`\n[${new Date().toISOString()}] New event in TX: ${log.transactionHash}`);
 
                     // Try to parse as ConfidentialBridgeInitiated or ConfidentialBridgeInitiatedWithPlaintext
@@ -711,9 +720,11 @@ async function monitorMode() {
 
                         if (decoded.eventName === "ConfidentialBridgeInitiated") {
                             console.log("    ✅ Confidential bridge event detected (legacy)!");
+                            processedTxHashes.add(txHash);  // Mark as processed BEFORE relaying
                             await relayConfidentialToSolana(log.transactionHash!);
                         } else if (decoded.eventName === "ConfidentialBridgeInitiatedWithPlaintext") {
                             console.log("    ✅ Confidential bridge event detected (with plaintext)!");
+                            processedTxHashes.add(txHash);  // Mark as processed BEFORE relaying
                             await relayConfidentialToSolana(log.transactionHash!);
                         }
                     } catch (decodeError: any) {

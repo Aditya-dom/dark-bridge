@@ -62,7 +62,7 @@ export default function DocsPage() {
                                         <ol className="list-decimal list-inside space-y-2 text-sm text-gray-300">
                                             <li>Click the <span className="text-white font-semibold">Menu</span> button in the top right.</li>
                                             <li>Locate the <span className="text-white font-semibold">Token Faucet</span> section.</li>
-                                            <li>Click <span className="text-white font-semibold">&quot;Drip 1000 Tokens&quot;</span> to mint cDARK to your connected EVM wallet.</li>
+                                            <li>Click <span className="text-white font-semibold">&quot;Drip 100 Tokens&quot;</span> to mint cDARK to your connected EVM wallet.</li>
                                         </ol>
                                     </div>
                                 </div>

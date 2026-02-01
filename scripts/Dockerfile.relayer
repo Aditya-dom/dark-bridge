@@ -1,0 +1,28 @@
+# Dockerfile for Privacy Relayer
+# Build from project root: docker build -f scripts/Dockerfile.relayer -t privacy-relayer .
+
+FROM oven/bun:latest AS base
+WORKDIR /app
+
+# Copy clients first (needed by scripts)
+COPY clients/ts ./clients/ts
+
+# Copy scripts
+COPY scripts ./scripts
+
+# Install clients dependencies and build
+WORKDIR /app/clients/ts
+RUN bun install --ignore-scripts && bun run build
+
+# Install scripts dependencies
+WORKDIR /app/scripts
+RUN bun install --ignore-scripts
+
+# Make startup script executable
+RUN chmod +x start-relayers.sh
+
+# Set environment
+ENV NODE_ENV=production
+
+# Run both relayers
+CMD ["./start-relayers.sh"]
