@@ -20,13 +20,13 @@ export default function Home() {
                         <BridgeForm />
                     </div>
 
-                    {/* Footer */}
-                    <footer className="mt-20 text-center">
+                    {/* Protected Badge */}
+                    <div className="mt-4 text-center">
                         <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-black/20 border border-white/5">
                             <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
                             <span className="text-xs text-gray-500">Protected by Inco Network TEE</span>
                         </div>
-                    </footer>
+                    </div>
                 </div>
             </div>
         </main>
