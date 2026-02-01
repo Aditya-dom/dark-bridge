@@ -19,14 +19,14 @@ export function Header() {
     return (
         <header className="relative z-50 flex items-center justify-between py-3 px-4 md:py-4 md:px-6">
             {/* Logo */}
-            <div className="flex items-center gap-0">
-                <div className="w-20 h-20 md:w-24 md:h-24 rounded-xl overflow-hidden flex items-center justify-center">
+            <div className="flex items-center gap-2">
+                <div className="w-14 h-14 md:w-16 md:h-16 rounded-xl overflow-hidden flex items-center justify-center bg-gradient-to-br from-purple-900/30 to-indigo-900/30 border border-purple-500/20 shadow-lg shadow-purple-500/10">
                     <Image 
                         src="/darklogo.png" 
                         alt="DarkBridge Logo" 
-                        width={96} 
-                        height={96} 
-                        className="object-contain w-full h-full"
+                        width={56} 
+                        height={56} 
+                        className="object-contain w-[85%] h-[85%] drop-shadow-[0_0_8px_rgba(139,92,246,0.5)]"
                     />
                 </div>
                 <div>

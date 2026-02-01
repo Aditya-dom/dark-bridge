@@ -59,7 +59,7 @@ export function BridgeForm() {
     const { publicKey: solanaPublicKey, connected: isSolanaConnected, signTransaction } = useWallet();
     const { connection } = useConnection();
 
-    const [direction, setDirection] = useState<Direction>("solana-to-base");
+    const [direction, setDirection] = useState<Direction>("base-to-solana");
     const [amount, setAmount] = useState("");
     const [loading, setLoading] = useState(false);
     const [txHash, setTxHash] = useState<string | null>(null);
