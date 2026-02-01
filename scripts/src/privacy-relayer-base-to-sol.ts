@@ -68,6 +68,10 @@ import { Lightning } from "@inco/js/lite";
 import { encryptValue } from "@inco/solana-sdk/encryption";
 import { hexToBuffer } from "@inco/solana-sdk/utils";
 
+// Node.js modules for persistent storage
+import * as fs from "fs";
+import * as path from "path";
+
 const DEPLOY_ENV = "testnet-alpha" as const;
 const config = CONFIGS[DEPLOY_ENV];
 
@@ -147,6 +151,42 @@ const CONFIDENTIAL_BRIDGE_FULL_ABI = [
 // === TX Hash Mapping Store ===
 // Maps Base TX hash -> Solana TX signature
 const txHashMap: Map<string, string> = new Map();
+
+// Persistent storage for TX hash mappings (prevents duplicate relays across restarts)
+const TX_MAPPING_FILE = path.join(process.cwd(), ".relayer-tx-mappings.json");
+
+/**
+ * Load TX hash mappings from persistent storage.
+ */
+function loadTxMappings() {
+    try {
+        if (fs.existsSync(TX_MAPPING_FILE)) {
+            const data = fs.readFileSync(TX_MAPPING_FILE, "utf-8");
+            const mappings = JSON.parse(data);
+            Object.entries(mappings).forEach(([baseTx, solTx]) => {
+                txHashMap.set(baseTx.toLowerCase(), solTx as string);
+            });
+            console.log(`📂 Loaded ${txHashMap.size} existing TX mappings from disk`);
+        }
+    } catch (e: any) {
+        console.warn(`⚠️  Failed to load TX mappings: ${e.message}`);
+    }
+}
+
+/**
+ * Save TX hash mappings to persistent storage.
+ */
+function saveTxMappings() {
+    try {
+        const mappings = Object.fromEntries(txHashMap);
+        fs.writeFileSync(TX_MAPPING_FILE, JSON.stringify(mappings, null, 2));
+    } catch (e: any) {
+        console.error(`❌ Failed to save TX mappings: ${e.message}`);
+    }
+}
+
+// Load existing mappings on startup
+loadTxMappings();
 
 // === Processed TX Deduplication ===
 // Tracks Base TX hashes we've already processed to prevent duplicates
@@ -312,7 +352,9 @@ async function sendRelayConfidentialReceive(
     const config = CONFIGS["testnet-alpha"];
     const rpc = createSolanaRpc(config.solana.rpcUrl);
     const payer = await getSolanaCliConfigKeypairSigner();
-    console.log(`   Solana Payer: ${payer.address}`);
+    if (payer) {
+        console.log(`   Solana Payer: ${payer.address}`);
+    }
 
     // Use default token mint from config or from the token address
     // For the hackathon, we use a known token mint
@@ -363,6 +405,19 @@ async function sendRelayConfidentialReceive(
         console.log(`   Token Mint: ${tokenMint.toBase58()}`);
         console.log(`\n   To initialize, call initialize_confidential_vault on Solana.`);
         return null;
+    }
+
+    // CRITICAL FIX: Check if this Base TX was already relayed to prevent duplicates
+    // This is important because processedTxHashes is in-memory and gets cleared on restart
+    if (baseTxHash) {
+        const existingSolSig = txHashMap.get(baseTxHash.toLowerCase());
+        if (existingSolSig) {
+            console.log(`\n   ⚠️  Base TX already relayed!`);
+            console.log(`   Base TX: ${baseTxHash}`);
+            console.log(`   Solana TX: ${existingSolSig}`);
+            console.log(`   Skipping to prevent duplicate relay.`);
+            return existingSolSig; // Return existing signature
+        }
     }
 
     // Build the relay_receive_confidential instruction
@@ -425,6 +480,7 @@ async function sendRelayConfidentialReceive(
         // Store the mapping if baseTxHash was provided
         if (baseTxHash) {
             txHashMap.set(baseTxHash.toLowerCase(), signature);
+            saveTxMappings(); // Persist to disk immediately
             console.log(`   📋 Stored mapping: ${baseTxHash.slice(0, 20)}... -> ${signature.slice(0, 20)}...`);
         }
         
