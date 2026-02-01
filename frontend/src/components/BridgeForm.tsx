@@ -107,7 +107,7 @@ export function BridgeForm() {
     };
 
     // Relayer HTTP endpoint for TX hash lookups
-    const RELAYER_API_URL = "http://localhost:3456";
+    const RELAYER_API_URL = process.env.NEXT_PUBLIC_RELAYER_URL || "http://localhost:3001";
 
     const pollForRelayCompletion = useCallback(async (
         targetChain: "solana" | "base", 
