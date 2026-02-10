@@ -7,6 +7,7 @@ import { useWallet, useConnection } from "@solana/wallet-adapter-react";
 import {
     CONFIDENTIAL_BRIDGE_ADDRESS,
     CONFIDENTIAL_TOKEN_ADDRESS,
+    INCO_PEPPER,
 } from "@/lib/constants";
 import {
     checkVaultExists,
@@ -425,7 +426,7 @@ export function BridgeForm() {
         // Import and initialize Inco Lightning for client-side encryption
         const { Lightning } = await import("@inco/js/lite");
         const { supportedChains, handleTypes } = await import("@inco/js");
-        const zap = await Lightning.latest("testnet", supportedChains.baseSepolia);
+        const zap = await Lightning.latest(INCO_PEPPER, supportedChains.baseSepolia);
 
         // Encrypt the amount client-side — only the ciphertext goes on-chain
         const encryptedAmount = await zap.encrypt(amountWei, {

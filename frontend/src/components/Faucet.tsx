@@ -4,7 +4,7 @@ import { useState, useEffect } from "react";
 import { useAccount, useChainId, useSwitchChain, useWalletClient, useWaitForTransactionReceipt } from "wagmi";
 import { parseAbi, type Hash } from "viem";
 import { baseSepolia } from "wagmi/chains";
-import { CONFIDENTIAL_TOKEN_ADDRESS } from "@/lib/constants";
+import { CONFIDENTIAL_TOKEN_ADDRESS, INCO_PEPPER } from "@/lib/constants";
 import { motion } from "framer-motion";
 import { Droplets, ExternalLink, AlertCircle, CheckCircle, Loader2, Coins } from "lucide-react";
 
@@ -71,7 +71,7 @@ export function Faucet() {
             // Client-side encrypt the amount using Inco zap
             const { Lightning } = await import("@inco/js/lite");
             const { handleTypes, supportedChains } = await import("@inco/js");
-            const zap = await Lightning.latest("testnet", supportedChains.baseSepolia);
+            const zap = await Lightning.latest(INCO_PEPPER, supportedChains.baseSepolia);
 
             console.log("Encrypting amount with Inco...");
             const ciphertext = await zap.encrypt(mintAmount, {
