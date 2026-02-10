@@ -547,6 +547,15 @@ export function BridgeForm() {
             const relayData = await relayResponse.json();
             console.log("Relayer response:", relayData);
 
+            if (relayResponse.ok && relayData.solanaTxHash) {
+                // Relayer returned the Solana TX hash directly — relay is complete!
+                console.log("Relay completed! Solana TX:", relayData.solanaTxHash);
+                setRelayTxHash(relayData.solanaTxHash);
+                setRelayComplete(true);
+                setStatus("Tokens minted on Solana");
+                return;
+            }
+
             if (!relayResponse.ok) {
                 console.warn("Relayer returned error:", relayData.error);
                 // Don't throw — still poll for completion since the relayer monitor may pick it up
@@ -699,6 +708,15 @@ export function BridgeForm() {
             });
             const relayData = await relayResponse.json();
             console.log("Relayer response:", relayData);
+
+            if (relayResponse.ok && relayData.txHash) {
+                // Relayer returned the Base mint TX hash directly — relay is complete!
+                console.log("Relay completed! Base TX:", relayData.txHash);
+                setRelayTxHash(relayData.txHash);
+                setRelayComplete(true);
+                setStatus("Tokens minted on Base");
+                return;
+            }
 
             if (!relayResponse.ok) {
                 console.warn("Relayer returned error:", relayData.error);

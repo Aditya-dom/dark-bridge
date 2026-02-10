@@ -126,6 +126,11 @@ interface BridgeEvent {
 
 const pendingBridgeEvents = new Map<string, BridgeEvent>();
 
+// Map Base TX hash → Solana TX hash (for /tx/:hash polling)
+const completedRelays = new Map<string, { solanaTxHash: string; baseTxHash: string; timestamp: number }>();
+// Map Base TX hash → Base mint TX hash (for /relay-to-base polling)
+const completedBaseMints = new Map<string, { baseMintTxHash: string; solanaTxHash: string; timestamp: number }>();
+
 // --- ABIs ---
 const CONFIDENTIAL_BRIDGE_FULL_ABI = [
     {
@@ -225,13 +230,19 @@ app.post('/relay', async (c) => {
         };
 
         // Relay to Solana
-        const success = await relayToSolana(bridgeEvent, new Uint8Array(ciphertextBytes));
+        const solanaTxHash = await relayToSolana(bridgeEvent, new Uint8Array(ciphertextBytes));
 
-        if (success) {
+        if (solanaTxHash) {
             bridgeEvent.processed = true;
             pendingBridgeEvents.set(baseTxHash, bridgeEvent);
+            // Store completed relay for /tx/:hash polling
+            completedRelays.set(baseTxHash.toLowerCase(), {
+                solanaTxHash,
+                baseTxHash,
+                timestamp: Date.now(),
+            });
             console.log(`   ✅ Successfully relayed to Solana!`);
-            return c.json({ success: true, message: 'Relayed to Solana' });
+            return c.json({ success: true, message: 'Relayed to Solana', solanaTxHash });
         } else {
             return c.json({ error: 'Failed to relay to Solana' }, 500);
         }
@@ -333,6 +344,12 @@ app.post('/relay-to-base', async (c) => {
         if (receipt.status === "success") {
             console.log(`   ✅ Minted on Base! TX: ${hash}`);
             console.log(`   📍 Block: ${receipt.blockNumber}`);
+            // Store completed mint for /tx/:hash polling
+            completedBaseMints.set(solanaTxHash.toLowerCase(), {
+                baseMintTxHash: hash,
+                solanaTxHash,
+                timestamp: Date.now(),
+            });
             return c.json({ success: true, txHash: hash, message: 'Minted on Base' });
         } else {
             console.log(`   ❌ Transaction reverted`);
@@ -429,6 +446,44 @@ app.get('/status/:handle', (c) => {
 });
 
 /**
+ * GET /tx/:hash
+ * 
+ * Frontend polls this to check relay completion.
+ * Returns the target chain TX hash if the relay is done.
+ */
+app.get('/tx/:hash', (c) => {
+    const hash = c.req.param('hash').toLowerCase();
+    
+    // Check Base→Solana relays
+    const solanaRelay = completedRelays.get(hash);
+    if (solanaRelay) {
+        return c.json({ 
+            status: 'completed',
+            solanaTxHash: solanaRelay.solanaTxHash,
+            baseTxHash: solanaRelay.baseTxHash,
+        });
+    }
+    
+    // Check Solana→Base relays
+    const baseMint = completedBaseMints.get(hash);
+    if (baseMint) {
+        return c.json({ 
+            status: 'completed',
+            baseMintTxHash: baseMint.baseMintTxHash,
+            solanaTxHash: baseMint.solanaTxHash,
+        });
+    }
+    
+    // Check if pending
+    const pending = pendingBridgeEvents.get(hash);
+    if (pending) {
+        return c.json({ status: pending.processed ? 'completed' : 'pending' });
+    }
+    
+    return c.json({ status: 'unknown' }, 404);
+});
+
+/**
  * GET /pending
  * 
  * List pending bridge events awaiting authorization
@@ -504,15 +559,20 @@ async function processAuthorization(handle: string): Promise<boolean> {
         console.log(`   ✅ Solana ciphertext: ${ciphertextBytes.length} bytes`);
 
         // Step 3: Relay to Solana
-        const success = await relayToSolana(bridgeEvent, new Uint8Array(ciphertextBytes));
+        const solanaTxHash = await relayToSolana(bridgeEvent, new Uint8Array(ciphertextBytes));
 
-        if (success) {
+        if (solanaTxHash) {
             auth.processed = true;
             bridgeEvent.processed = true;
+            completedRelays.set(bridgeEvent.txHash.toLowerCase(), {
+                solanaTxHash,
+                baseTxHash: bridgeEvent.txHash,
+                timestamp: Date.now(),
+            });
             console.log(`   ✅ Successfully relayed to Solana!`);
         }
 
-        return success;
+        return !!solanaTxHash;
     } catch (error: any) {
         console.error(`   ❌ Failed to process:`, error.message);
         
@@ -528,7 +588,7 @@ async function processAuthorization(handle: string): Promise<boolean> {
 /**
  * Send the relay transaction to Solana
  */
-async function relayToSolana(bridgeEvent: BridgeEvent, encryptedAmountBytes: Uint8Array): Promise<boolean> {
+async function relayToSolana(bridgeEvent: BridgeEvent, encryptedAmountBytes: Uint8Array): Promise<string | null> {
     try {
         const recipientPubkey = bytes32ToPublicKey(bridgeEvent.toSolana);
         // Use the known Solana token mint (not from remoteToken which may be 0x0 for /relay calls)
@@ -627,7 +687,7 @@ async function relayToSolana(bridgeEvent: BridgeEvent, encryptedAmountBytes: Uin
         console.log(`   Explorer: https://explorer.solana.com/tx/${signature}?cluster=devnet`);
 
         bridgeEvent.processed = true;
-        return true;
+        return signature;
 
     } catch (error: any) {
         console.error(`   ❌ Relay failed:`, error.message);
@@ -635,7 +695,7 @@ async function relayToSolana(bridgeEvent: BridgeEvent, encryptedAmountBytes: Uin
             console.error(`   Logs:`);
             error.logs.forEach((log: string) => console.error(`      ${log}`));
         }
-        return false;
+        return null;
     }
 }
 
