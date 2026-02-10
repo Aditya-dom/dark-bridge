@@ -253,6 +253,142 @@ app.post('/relay', async (c) => {
 });
 
 /**
+ * POST /relay-bridge-to-solana
+ * 
+ * SENDER PRIVACY for Base → Solana bridging.
+ * 
+ * Instead of the user calling bridgePrivateToSolana directly (which exposes their
+ * EVM address as tx.from on BaseScan), the user signs the bridge parameters off-chain
+ * using personal_sign. The relayer submits the tx via bridgePrivateToSolanaViaRelayer,
+ * so only the RELAYER's address appears as tx.from.
+ * 
+ * After the Base TX confirms, the relayer also re-encrypts the plaintext for Solana
+ * and relays to the Solana program (same as /relay).
+ * 
+ * Body: {
+ *   localToken: "0x...",           // EVM token address
+ *   toSolana: "0x...",             // bytes32 Solana pubkey
+ *   encryptedAmount: "0x...",      // Inco-encrypted ciphertext (hex)
+ *   sender: "0x...",               // User's EVM address (for contract validation)
+ *   senderNonce: "0",              // User's nonce (string)
+ *   deadline: "1234567890",        // Unix timestamp (string)
+ *   signature: "0x...",            // personal_sign signature
+ *   plaintextAmount: "1000...",    // Plaintext amount for Solana relay
+ * }
+ */
+app.post('/relay-bridge-to-solana', async (c) => {
+    try {
+        const body = await c.req.json();
+        const { localToken, toSolana, encryptedAmount, sender, senderNonce, deadline, signature, plaintextAmount } = body;
+
+        if (!localToken || !toSolana || !encryptedAmount || !sender || senderNonce === undefined || !deadline || !signature) {
+            return c.json({ error: 'Missing required fields' }, 400);
+        }
+
+        console.log(`\n📥 Received relay-bridge-to-solana request (SENDER PRIVACY):`);
+        console.log(`   Sender: ${sender}`);
+        console.log(`   To Solana: ${toSolana}`);
+        console.log(`   Nonce: ${senderNonce}`);
+        console.log(`   Deadline: ${deadline}`);
+
+        // Step 1: Get Inco fee from the contract
+        const BRIDGE_VIEW_ABI = parseAbi([
+            "function getIncoFee() external view returns (uint256)",
+        ]);
+        let incoFee: bigint;
+        try {
+            incoFee = await basePublicClient.readContract({
+                address: CONFIDENTIAL_BRIDGE_ADDRESS,
+                abi: BRIDGE_VIEW_ABI,
+                functionName: "getIncoFee",
+            });
+        } catch {
+            incoFee = BigInt("100000000000000"); // 0.0001 ETH fallback
+        }
+        console.log(`   💰 Inco fee: ${incoFee} wei`);
+
+        // Step 2: Call bridgePrivateToSolanaViaRelayer on the contract
+        // The relayer (evmAccount) is tx.from — user's address is only in calldata
+        const RELAYER_BRIDGE_ABI = parseAbi([
+            "function bridgePrivateToSolanaViaRelayer(address localToken, bytes32 toSolana, bytes encryptedAmount, address sender, uint256 senderNonce, uint256 deadline, bytes signature) external payable",
+        ]);
+
+        console.log(`   📤 Calling bridgePrivateToSolanaViaRelayer...`);
+        console.log(`   🔑 Relayer (tx.from): ${evmAccount.address}`);
+
+        const hash = await evmWalletClient.writeContract({
+            address: CONFIDENTIAL_BRIDGE_ADDRESS,
+            abi: RELAYER_BRIDGE_ABI,
+            functionName: "bridgePrivateToSolanaViaRelayer",
+            args: [
+                localToken as `0x${string}`,
+                toSolana as `0x${string}`,
+                encryptedAmount as `0x${string}`,
+                sender as `0x${string}`,
+                BigInt(senderNonce),
+                BigInt(deadline),
+                signature as `0x${string}`,
+            ],
+            value: incoFee,
+        });
+
+        console.log(`   ⏳ Base TX sent: ${hash}`);
+        const receipt = await basePublicClient.waitForTransactionReceipt({ hash });
+
+        if (receipt.status !== "success") {
+            console.log(`   ❌ Base TX reverted`);
+            return c.json({ error: 'Bridge transaction reverted on Base' }, 500);
+        }
+
+        console.log(`   ✅ Base TX confirmed: ${hash}`);
+        console.log(`   🔒 Only relayer ${evmAccount.address} is visible as tx.from on BaseScan!`);
+
+        // Step 3: Now relay the plaintext to Solana (same logic as /relay)
+        if (plaintextAmount) {
+            console.log(`   📥 Re-encrypting for Solana TEE...`);
+            const plaintext = BigInt(plaintextAmount);
+            const solanaCiphertext = await encryptValue(plaintext);
+            const ciphertextBytes = hexToBuffer(solanaCiphertext);
+            console.log(`   ✅ Solana ciphertext: ${ciphertextBytes.length} bytes`);
+
+            const { keccak256: keccak256Hash } = await import("viem");
+            const bridgeEvent: BridgeEvent = {
+                txHash: hash,
+                nonce: 0n,
+                localToken: localToken as Address,
+                remoteToken: '0x0' as Hex,
+                toSolana: toSolana as Hex,
+                toSolanaHash: keccak256Hash(toSolana as Hex),
+                encryptedAmount: '0x0' as Hex,
+                timestamp: Date.now(),
+                processed: false,
+            };
+
+            const solanaTxHash = await relayToSolana(bridgeEvent, new Uint8Array(ciphertextBytes));
+
+            if (solanaTxHash) {
+                bridgeEvent.processed = true;
+                pendingBridgeEvents.set(hash, bridgeEvent);
+                completedRelays.set(hash.toLowerCase(), {
+                    solanaTxHash,
+                    baseTxHash: hash,
+                    timestamp: Date.now(),
+                });
+                console.log(`   ✅ Relayed to Solana: ${solanaTxHash}`);
+                return c.json({ success: true, baseTxHash: hash, solanaTxHash, message: 'Bridged via relayer (sender privacy preserved)' });
+            }
+        }
+
+        // Return Base TX hash even if Solana relay hasn't happened yet
+        return c.json({ success: true, baseTxHash: hash, message: 'Base TX confirmed, Solana relay pending' });
+
+    } catch (error: any) {
+        console.error('Error in /relay-bridge-to-solana:', error);
+        return c.json({ error: error.message }, 500);
+    }
+});
+
+/**
  * POST /relay-to-base
  * 
  * Frontend sends the decrypted plaintext amount (user already called Solana attested decrypt)
@@ -1015,12 +1151,13 @@ serve({
 console.log(`✅ Server running at http://localhost:${PORT}`);
 console.log(`
 Endpoints:
-  GET  /health            - Server status
-  POST /relay             - Submit decrypted plaintext for Solana relay (Base → Solana)
-  POST /relay-to-base     - Submit decrypted plaintext for Base minting (Solana → Base)
-  POST /relay-bridge-out  - Relay bridge-out from Solana via relayer (SENDER PRIVACY)
-  POST /authorize         - (deprecated) Submit decrypt authorization
-  GET  /status/:handle    - Check authorization status
-  GET  /tx/:hash          - Check relay completion by TX hash
-  GET  /pending           - List pending bridge events
+  GET  /health                - Server status
+  POST /relay                 - Submit decrypted plaintext for Solana relay (Base → Solana)
+  POST /relay-bridge-to-solana - Bridge Base→Solana via relayer (EVM SENDER PRIVACY)
+  POST /relay-to-base         - Submit decrypted plaintext for Base minting (Solana → Base)
+  POST /relay-bridge-out      - Relay bridge-out from Solana via relayer (SOLANA SENDER PRIVACY)
+  POST /authorize             - (deprecated) Submit decrypt authorization
+  GET  /status/:handle        - Check authorization status
+  GET  /tx/:hash              - Check relay completion by TX hash
+  GET  /pending               - List pending bridge events
 `);
