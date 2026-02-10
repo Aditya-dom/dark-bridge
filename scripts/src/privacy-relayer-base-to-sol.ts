@@ -92,8 +92,8 @@ async function getZap() {
 }
 
 // Deployed contract addresses
-const CONFIDENTIAL_BRIDGE_ADDRESS = "0x971B8434F64B0c8f3119aD2825f257F503abB48e" as Address;
-const CONFIDENTIAL_TOKEN_ADDRESS = "0xbBbE1A6BaFa59dC40377E1a264AB21797EA51193" as Address;
+const CONFIDENTIAL_BRIDGE_ADDRESS = "0x04423E2D4e74b8C5D17730143400ca43fC800f73" as Address;
+const CONFIDENTIAL_TOKEN_ADDRESS = "0xeC7f5bDafE9934658d717E9a13Ae4259858b5F0b" as Address;
 
 // Bridge Program ID
 const BRIDGE_PROGRAM_ID = new PublicKey("EEMKRm1ANMBZHS6yEi67bKVuZDPhztQHVWBzoFnoVbh9");
@@ -109,7 +109,7 @@ const basePublicClient = createPublicClient({
 
 // --- ABIs ---
 const CONFIDENTIAL_BRIDGE_ABI = parseAbi([
-    "event ConfidentialBridgeInitiated(uint256 indexed nonce, address indexed localToken, bytes32 indexed remoteToken, bytes32 toSolana, bytes32 encryptedAmount)",
+    "event ConfidentialBridgeInitiated(uint256 indexed nonce, address indexed localToken, bytes32 indexed remoteToken, bytes32 toSolanaHash, bytes32 encryptedAmount)",
 ]);
 
 // Full ABI for decoding
@@ -121,7 +121,7 @@ const CONFIDENTIAL_BRIDGE_FULL_ABI = [
             { name: "nonce", type: "uint256", indexed: true },
             { name: "localToken", type: "address", indexed: true },
             { name: "remoteToken", type: "bytes32", indexed: true },
-            { name: "toSolana", type: "bytes32", indexed: false },
+            { name: "toSolanaHash", type: "bytes32", indexed: false },
             { name: "encryptedAmount", type: "bytes32", indexed: false },
         ],
     },
@@ -228,7 +228,7 @@ interface ConfidentialBridgeInitiatedEvent {
     nonce: bigint;
     localToken: Address;
     remoteToken: Hex;
-    toSolana: Hex;
+    toSolanaHash: Hex;  // PRIVACY: keccak256(toSolana) — raw pubkey NOT on-chain
     encryptedAmount: Hex;
 }
 
@@ -253,7 +253,7 @@ function parseConfidentialBridgeInitiatedEvent(
                         nonce: args.nonce,
                         localToken: args.localToken,
                         remoteToken: args.remoteToken,
-                        toSolana: args.toSolana,
+                        toSolanaHash: args.toSolanaHash,
                         encryptedAmount: args.encryptedAmount,
                     };
                 }
@@ -262,7 +262,7 @@ function parseConfidentialBridgeInitiatedEvent(
             }
         }
     }
-    return null;;
+    return null;
 }
 
 /**
@@ -393,7 +393,6 @@ async function sendRelayConfidentialReceive(
             { pubkey: payerKeypair.publicKey, isSigner: true, isWritable: true },  // relayer
             { pubkey: bridgeState, isSigner: false, isWritable: false },            // bridge
             { pubkey: bridgeAuthority, isSigner: false, isWritable: true },         // bridge_authority
-            { pubkey: recipientPubkey, isSigner: false, isWritable: false },        // owner (for Inco allow() grants)
             { pubkey: vaultPda, isSigner: false, isWritable: true },                // vault
             { pubkey: INCO_LIGHTNING_ID, isSigner: false, isWritable: false },      // inco_lightning_program
             { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }, // system_program
@@ -566,7 +565,7 @@ async function crossChainReencrypt(evmHandle: Hex): Promise<Uint8Array> {
  * @param txHash - The Base transaction hash
  * @param plaintextAmountWei - Optional plaintext amount (provided by user via frontend or --amount flag)
  */
-async function relayConfidentialToSolana(txHash: string, plaintextAmountWei?: string): Promise<boolean> {
+async function relayConfidentialToSolana(txHash: string, plaintextAmountWei?: string, toSolanaOverride?: string): Promise<boolean> {
     console.log(`\n=== Processing Base TX: ${txHash} ===`);
 
     try {
@@ -587,10 +586,20 @@ async function relayConfidentialToSolana(txHash: string, plaintextAmountWei?: st
         console.log(`   ✅ Found ConfidentialBridgeInitiated event:`);
         console.log(`      Nonce: ${bridgeEvent.nonce}`);
         console.log(`      Local Token: ${bridgeEvent.localToken}`);
-        console.log(`      To Solana: ${bridgeEvent.toSolana}`);
+        console.log(`      To Solana Hash: ${bridgeEvent.toSolanaHash}`);
         console.log(`      EVM Handle: ${bridgeEvent.encryptedAmount}`);
 
-        const recipientPubkey = bytes32ToPublicKey(bridgeEvent.toSolana);
+        // PRIVACY: Event only has keccak256(toSolana). We need the plaintext from:
+        // - CLI --to flag, or
+        // - /relay endpoint (frontend sends it)
+        if (!toSolanaOverride) {
+            console.log(`   ❌ Cannot relay: event only has toSolanaHash (privacy).`);
+            console.log(`   💡 Use: bun run src/privacy-relayer-base-to-sol.ts ${txHash} --amount <WEI> --to <SOLANA_PUBKEY>`);
+            console.log(`   💡 Or use privacy-relayer-server.ts with the /relay endpoint.`);
+            return false;
+        }
+
+        const recipientPubkey = new PublicKey(toSolanaOverride);
         const baseSender = toBytes(evmAccount.address).slice(0, 20);
         console.log(`   Recipient: ${recipientPubkey.toBase58()}`);
 
@@ -752,17 +761,20 @@ async function main() {
     } else if (arg === "--demo") {
         await demoMode();
     } else if (arg && arg.startsWith("0x")) {
-        // Check for --amount flag
+        // Check for --amount and --to flags
         const amountIdx = process.argv.indexOf("--amount");
         const plaintextAmount = amountIdx !== -1 ? process.argv[amountIdx + 1] : undefined;
-        await relayConfidentialToSolana(arg, plaintextAmount);
+        const toIdx = process.argv.indexOf("--to");
+        const toSolana = toIdx !== -1 ? process.argv[toIdx + 1] : undefined;
+        await relayConfidentialToSolana(arg, plaintextAmount, toSolana);
     } else {
         console.log("\nUsage:");
         console.log("  Monitor mode:     bun run src/privacy-relayer-base-to-sol.ts --monitor");
-        console.log("  Process TX:       bun run src/privacy-relayer-base-to-sol.ts <BASE_TX_HASH> --amount <PLAINTEXT_WEI>");
+        console.log("  Process TX:       bun run src/privacy-relayer-base-to-sol.ts <BASE_TX_HASH> --amount <PLAINTEXT_WEI> --to <SOLANA_PUBKEY>");
         console.log("  Demo info:        bun run src/privacy-relayer-base-to-sol.ts --demo");
         console.log("");
-        console.log("  NOTE: attestedDecrypt must be done by the USER in the frontend.");
+        console.log("  NOTE: The on-chain event only has keccak256(toSolana) for privacy.");
+        console.log("  You must provide --to <SOLANA_PUBKEY> when processing a single TX.");
         console.log("  For the full flow, use privacy-relayer-server.ts with the /relay endpoint.");
     }
 }

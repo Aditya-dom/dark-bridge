@@ -316,13 +316,9 @@ pub fn receive_confidential_in<'info>(
     let vault = &mut ctx.accounts.vault;
     let inco = ctx.accounts.inco_lightning_program.to_account_info();
     let signer = ctx.accounts.bridge_authority.to_account_info();
-    let owner_key = ctx.accounts.owner.key();
 
-    // Verify owner matches vault (hash check)
-    require!(
-        vault.owner_hash == hash_owner(&owner_key),
-        crate::BridgeError::Unauthorized
-    );
+    // PRIVACY: No owner account is passed — vault PDA seeds already guarantee correctness.
+    // The owner will call grant_handle_access separately to get decrypt permission.
 
     // Create encrypted handle from ciphertext
     let cpi_ctx = CpiContext::new(inco.clone(), Operation { signer: signer.clone() });
@@ -333,19 +329,8 @@ pub fn receive_confidential_in<'info>(
     let new_balance: Euint128 = e_add(cpi_ctx, vault.encrypted_balance, amount, 0)?;
     vault.encrypted_balance = new_balance;
 
-    // Grant allowance to owner for updated balance
-    if ctx.remaining_accounts.len() >= 2 {
-        let cpi_ctx = CpiContext::new(
-            inco.clone(),
-            Allow {
-                allowance_account: ctx.remaining_accounts[0].clone(),
-                signer: signer.clone(),
-                allowed_address: ctx.remaining_accounts[1].clone(),
-                system_program: ctx.accounts.system_program.to_account_info(),
-            },
-        );
-        allow(cpi_ctx, new_balance.0, true, owner_key)?;
-    }
+    // NOTE: allow() is NOT called here to avoid leaking the owner's pubkey.
+    // The user calls grant_handle_access from the frontend when they want to decrypt.
 
     // Emit receive event (owner_hash for privacy)
     emit!(ConfidentialBridgeInEvent {
@@ -372,13 +357,9 @@ pub fn relay_receive_confidential<'info>(
 ) -> Result<()> {
     let vault = &mut ctx.accounts.vault;
     let inco = ctx.accounts.inco_lightning_program.to_account_info();
-    let owner_key = ctx.accounts.owner.key();
     
-    // Verify owner matches vault (hash check)
-    require!(
-        vault.owner_hash == hash_owner(&owner_key),
-        crate::BridgeError::Unauthorized
-    );
+    // PRIVACY: No owner account is passed — vault PDA seeds already guarantee correctness.
+    // The owner will call grant_handle_access separately to get decrypt permission.
     
     // Use relayer as the signer for Inco operations
     // The relayer is the authorized entity that can mint to vaults
@@ -393,19 +374,8 @@ pub fn relay_receive_confidential<'info>(
     let new_balance: Euint128 = e_add(cpi_ctx, vault.encrypted_balance, amount, 0)?;
     vault.encrypted_balance = new_balance;
 
-    // Grant allowance to owner for updated balance
-    if ctx.remaining_accounts.len() >= 2 {
-        let cpi_ctx = CpiContext::new(
-            inco.clone(),
-            Allow {
-                allowance_account: ctx.remaining_accounts[0].clone(),
-                signer: signer.clone(),
-                allowed_address: ctx.remaining_accounts[1].clone(),
-                system_program: ctx.accounts.system_program.to_account_info(),
-            },
-        );
-        allow(cpi_ctx, new_balance.0, true, owner_key)?;
-    }
+    // NOTE: allow() is NOT called here to avoid leaking the owner's pubkey.
+    // The user calls grant_handle_access from the frontend when they want to decrypt.
 
     // Emit receive event (owner_hash for privacy)
     emit!(ConfidentialBridgeInEvent {
@@ -977,11 +947,9 @@ pub struct ReceiveConfidentialIn<'info> {
     #[account(mut)]
     pub bridge_authority: Signer<'info>,
 
-    /// The vault owner (needed for Inco allow() access grants).
-    /// CHECK: Verified against vault.owner_hash in the instruction handler.
-    pub owner: AccountInfo<'info>,
-
     /// The recipient vault.
+    /// PRIVACY: Owner pubkey is NOT passed as an account to prevent leaking it on-chain.
+    /// The vault PDA seeds (owner_hash + token_mint) already guarantee correctness.
     #[account(
         mut,
         has_one = bridge_authority,
@@ -1019,11 +987,10 @@ pub struct RelayReceiveConfidential<'info> {
     )]
     pub bridge_authority: AccountInfo<'info>,
 
-    /// The vault owner (needed for Inco allow() access grants).
-    /// CHECK: Verified against vault.owner_hash in the instruction handler.
-    pub owner: AccountInfo<'info>,
-
     /// The recipient vault.
+    /// PRIVACY: Owner pubkey is NOT passed as an account to prevent leaking it on-chain.
+    /// The vault PDA seeds (owner_hash + token_mint) already guarantee correctness.
+    /// The user calls grant_handle_access separately to get decrypt permission.
     #[account(
         mut,
         constraint = vault.bridge_authority == bridge_authority.key(),

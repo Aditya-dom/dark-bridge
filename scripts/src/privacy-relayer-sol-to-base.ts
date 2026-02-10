@@ -61,8 +61,8 @@ if (!EVM_PRIVATE_KEY) {
 const evmAccount = privateKeyToAccount(EVM_PRIVATE_KEY as `0x${string}`);
 
 // Deployed addresses (from base/deployments/base_sepolia.json and .cdark-deployment.json)
-const CONFIDENTIAL_BRIDGE_ADDRESS = "0x971B8434F64B0c8f3119aD2825f257F503abB48e" as Address;
-const CONFIDENTIAL_TOKEN_ADDRESS = "0xbBbE1A6BaFa59dC40377E1a264AB21797EA51193" as Address;
+const CONFIDENTIAL_BRIDGE_ADDRESS = "0x04423E2D4e74b8C5D17730143400ca43fC800f73" as Address;
+const CONFIDENTIAL_TOKEN_ADDRESS = "0xeC7f5bDafE9934658d717E9a13Ae4259858b5F0b" as Address;
 
 // Bridge Program ID
 const BRIDGE_PROGRAM_ID = new PublicKey("EEMKRm1ANMBZHS6yEi67bKVuZDPhztQHVWBzoFnoVbh9");
@@ -115,7 +115,7 @@ const baseWalletClient = createWalletClient({
 const CONFIDENTIAL_BRIDGE_ABI = parseAbi([
     "function receiveFromSolanaLegacy(address localToken, address to, bytes encryptedAmount) external payable",
     "function getIncoFee() external view returns (uint256)",
-    "event ConfidentialBridgeReceived(uint256 indexed nonce, address indexed localToken, address indexed to, bytes32 encryptedAmount)",
+    "event ConfidentialBridgeReceived(uint256 indexed nonce, address indexed localToken, bytes32 indexed toHash, bytes32 encryptedAmount)",
 ]);
 
 const CONFIDENTIAL_TOKEN_ABI = parseAbi([

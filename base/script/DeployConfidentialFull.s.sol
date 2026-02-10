@@ -14,9 +14,9 @@ import {ConfidentialBridge} from "../src/ConfidentialBridge.sol";
 ///   PRIVATE_KEY=0x... forge script script/DeployConfidentialFull.s.sol \
 ///     --rpc-url base-sepolia --broadcast --verify
 contract DeployConfidentialFull is Script {
-    // Existing infrastructure on Base Sepolia (alpha deployment)
-    address constant EXISTING_BRIDGE = 0x2B3550823301752c95290ec6f8781E88F0Bac8c4;
-    address constant FACTORY = 0xc2B907e5bb78A6E8C289A7bA890F3af5F6130Fd1;
+    // Existing infrastructure on Base Sepolia
+    address constant EXISTING_BRIDGE = 0x8E46419298a9620eA326113baf4019A23594BB11;
+    address constant FACTORY = 0xD40931BEa89fe4c1589c251dCD138f856bCAE750;
     
     // Solana token mint for cDARK (in bytes32 format)
     // 3JWs353tgpFRVxb6Ubi85hDm5eBsbGrJFmVqNS8t6V3V in base58

@@ -108,19 +108,22 @@ contract ConfidentialBridge is ReentrancyGuardTransient, OwnableRoles, Initializ
     //////////////////////////////////////////////////////////////
 
     /// @notice Emitted when a confidential bridge transfer is initiated.
+    /// @dev PRIVACY: toSolanaHash is keccak256(toSolana) — the raw Solana recipient is NOT revealed on-chain.
+    /// The relayer receives the plaintext toSolana via the /relay API endpoint.
     event ConfidentialBridgeInitiated(
         uint256 indexed nonce,
         address indexed localToken,
         Pubkey indexed remoteToken,
-        bytes32 toSolana,
+        bytes32 toSolanaHash,
         euint256 encryptedAmount
     );
 
     /// @notice Emitted when a confidential transfer is received from Solana.
+    /// @dev PRIVACY: `toHash` is keccak256(abi.encodePacked(to)) — raw address is NOT on-chain.
     event ConfidentialBridgeReceived(
         uint256 indexed nonce,
         address indexed localToken,
-        address indexed to,
+        bytes32 indexed toHash,
         euint256 encryptedAmount
     );
 
@@ -420,12 +423,12 @@ contract ConfidentialBridge is ReentrancyGuardTransient, OwnableRoles, Initializ
         uint256 nonce = confidentialNonce++;
         expectedHandles[nonce] = euint256.unwrap(amount);
 
-        // Emit standard event (receiver visible, sender hidden)
+        // Emit event with HASHED recipient (privacy: raw toSolana is NOT on-chain)
         emit ConfidentialBridgeInitiated(
             nonce,
             localToken,
             remoteToken,
-            toSolana,
+            keccak256(abi.encodePacked(toSolana)),
             amount
         );
     }
@@ -676,11 +679,12 @@ contract ConfidentialBridge is ReentrancyGuardTransient, OwnableRoles, Initializ
         uint256 nonce = confidentialNonce++;
         expectedHandles[nonce] = euint256.unwrap(amount);
 
+        // PRIVACY: Emit hash of recipient — raw toSolana is NOT on-chain
         emit ConfidentialBridgeInitiated(
             nonce,
             localToken,
             remoteToken,
-            toSolana,
+            keccak256(abi.encodePacked(toSolana)),
             amount
         );
     }
@@ -724,11 +728,12 @@ contract ConfidentialBridge is ReentrancyGuardTransient, OwnableRoles, Initializ
         uint256 nonce = confidentialNonce++;
         expectedHandles[nonce] = euint256.unwrap(amount);
 
+        // PRIVACY: Emit hash of recipient — raw toSolana is NOT on-chain
         emit ConfidentialBridgeInitiated(
             nonce,
             localToken,
             remoteToken,
-            toSolana,
+            keccak256(abi.encodePacked(toSolana)),
             amount
         );
 
@@ -770,7 +775,8 @@ contract ConfidentialBridge is ReentrancyGuardTransient, OwnableRoles, Initializ
             encryptedAmount
         );
 
-        emit ConfidentialBridgeReceived(nonce, localToken, to, amount);
+        // PRIVACY: Emit hash of recipient — raw address is NOT on-chain
+        emit ConfidentialBridgeReceived(nonce, localToken, keccak256(abi.encodePacked(to)), amount);
     }
 
     /// @notice Receive confidential tokens from Solana (legacy, no handle verification).
@@ -793,7 +799,8 @@ contract ConfidentialBridge is ReentrancyGuardTransient, OwnableRoles, Initializ
         euint256 amount = encryptedAmount.newEuint256(msg.sender);
 
         // Emit event without nonce (legacy)
-        emit ConfidentialBridgeReceived(0, localToken, to, amount);
+        // PRIVACY: Emit hash of recipient — raw address is NOT on-chain
+        emit ConfidentialBridgeReceived(0, localToken, keccak256(abi.encodePacked(to)), amount);
     }
 
     //////////////////////////////////////////////////////////////

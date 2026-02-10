@@ -74,8 +74,8 @@ if (!EVM_PRIVATE_KEY) {
 const evmAccount = privateKeyToAccount(EVM_PRIVATE_KEY as `0x${string}`);
 
 // Contract addresses
-const CONFIDENTIAL_BRIDGE_ADDRESS = "0x971B8434F64B0c8f3119aD2825f257F503abB48e" as Address;
-const CONFIDENTIAL_TOKEN_ADDRESS = "0xbBbE1A6BaFa59dC40377E1a264AB21797EA51193" as Address;
+const CONFIDENTIAL_BRIDGE_ADDRESS = "0x04423E2D4e74b8C5D17730143400ca43fC800f73" as Address;
+const CONFIDENTIAL_TOKEN_ADDRESS = "0xeC7f5bDafE9934658d717E9a13Ae4259858b5F0b" as Address;
 
 // Solana Program IDs
 const BRIDGE_PROGRAM_ID = new PublicKey("EEMKRm1ANMBZHS6yEi67bKVuZDPhztQHVWBzoFnoVbh9");
@@ -117,7 +117,8 @@ interface BridgeEvent {
     nonce: bigint;
     localToken: Address;
     remoteToken: Hex;
-    toSolana: Hex;
+    toSolana: Hex;       // Plaintext from /relay API (NOT from event)
+    toSolanaHash: Hex;   // keccak256(toSolana) from on-chain event
     encryptedAmount: Hex; // This is the handle
     timestamp: number;
     processed: boolean;
@@ -134,7 +135,7 @@ const CONFIDENTIAL_BRIDGE_FULL_ABI = [
             { name: "nonce", type: "uint256", indexed: true },
             { name: "localToken", type: "address", indexed: true },
             { name: "remoteToken", type: "bytes32", indexed: true },
-            { name: "toSolana", type: "bytes32", indexed: false },
+            { name: "toSolanaHash", type: "bytes32", indexed: false },
             { name: "encryptedAmount", type: "bytes32", indexed: false },
         ],
     },
@@ -210,12 +211,14 @@ app.post('/relay', async (c) => {
         console.log(`   ✅ Solana ciphertext: ${ciphertextBytes.length} bytes`);
 
         // Build the bridge event from the request
+        const { keccak256: keccak256Hash } = await import("viem");
         const bridgeEvent: BridgeEvent = {
             txHash: baseTxHash as Hex,
             nonce: 0n,
             localToken: (localToken || CONFIDENTIAL_TOKEN_ADDRESS) as Address,
             remoteToken: '0x0' as Hex,
             toSolana: toSolana as Hex,
+            toSolanaHash: keccak256Hash(toSolana as Hex),
             encryptedAmount: '0x0' as Hex,
             timestamp: Date.now(),
             processed: false,
@@ -437,6 +440,7 @@ app.get('/pending', (c) => {
             txHash: e.txHash,
             handle: e.encryptedAmount,
             toSolana: e.toSolana,
+            toSolanaHash: e.toSolanaHash || ('0x0' as Hex),
             timestamp: e.timestamp,
         }));
 
@@ -603,7 +607,6 @@ async function relayToSolana(bridgeEvent: BridgeEvent, encryptedAmountBytes: Uin
                 { pubkey: payerKeypair.publicKey, isSigner: true, isWritable: true },   // relayer
                 { pubkey: bridgeState, isSigner: false, isWritable: false },             // bridge
                 { pubkey: bridgeAuthority, isSigner: false, isWritable: true },          // bridge_authority
-                { pubkey: recipientPubkey, isSigner: false, isWritable: false },         // owner
                 { pubkey: vaultPda, isSigner: false, isWritable: true },                 // vault
                 { pubkey: INCO_LIGHTNING_ID, isSigner: false, isWritable: false },       // inco_lightning_program
                 { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }, // system_program
@@ -668,14 +671,15 @@ async function monitorBridgeEvents() {
 
                         console.log(`\n📨 New bridge event in TX: ${log.transactionHash}`);
                         console.log(`   Handle: ${handle}`);
-                        console.log(`   To: ${bytes32ToPublicKey(args.toSolana).toBase58()}`);
+                        console.log(`   To (hash): ${args.toSolanaHash}`);
 
                         const bridgeEvent: BridgeEvent = {
                             txHash: log.transactionHash as Hex,
                             nonce: args.nonce,
                             localToken: args.localToken,
                             remoteToken: args.remoteToken,
-                            toSolana: args.toSolana,
+                            toSolana: '0x0' as Hex, // Unknown — will be set when /relay is called
+                            toSolanaHash: args.toSolanaHash,
                             encryptedAmount: handle,
                             timestamp: Date.now(),
                             processed: false,

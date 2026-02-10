@@ -1,11 +1,11 @@
 {
   "mockErc20": "0xcb5a0ad14bcd6b623b614cbcad21f7bdd9990d32",
-  "cDarkToken": "0xbBbE1A6BaFa59dC40377E1a264AB21797EA51193",
-  "confidentialBridge": "0x971B8434F64B0c8f3119aD2825f257F503abB48e",
+  "cDarkToken": "0xeC7f5bDafE9934658d717E9a13Ae4259858b5F0b",
+  "confidentialBridge": "0x04423E2D4e74b8C5D17730143400ca43fC800f73",
   "bridgeRelayer": "0xF8AF04bF0Ac151f2050436603d81Ba20f449028F",
   "solanaTokenMint": "3JWs353tgpFRVxb6Ubi85hDm5eBsbGrJFmVqNS8t6V3V",
   "solanaTokenMintBytes32": "0x223403719246903aaf8dc5029034932739e7641a28e51c89c199ab62e27d5598",
-  "deployedAt": "2026-02-10",
+  "deployedAt": "2026-02-11",
   "deployer": "0xF8AF04bF0Ac151f2050436603d81Ba20f449028F",
-  "note": "Fresh deployment with owner_hash privacy + e.allow() for bridgeRelayer"
+  "note": "Redeployment with privacy-fixed events (toSolanaHash + toHash)"
 }

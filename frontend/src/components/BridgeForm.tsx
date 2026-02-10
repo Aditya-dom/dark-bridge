@@ -42,7 +42,7 @@ const CONFIDENTIAL_BRIDGE_EVENT_ABI = [
             { name: "nonce", type: "uint256", indexed: true },
             { name: "localToken", type: "address", indexed: true },
             { name: "remoteToken", type: "bytes32", indexed: true },
-            { name: "toSolana", type: "bytes32", indexed: false },
+            { name: "toSolanaHash", type: "bytes32", indexed: false },
             { name: "encryptedAmount", type: "bytes32", indexed: false },
         ],
     },
@@ -502,7 +502,7 @@ export function BridgeForm() {
                         topics: [...log.topics] as [`0x${string}`, ...`0x${string}`[]],
                     });
                     if (decoded.eventName === "ConfidentialBridgeInitiated") {
-                        const args = decoded.args as { toSolana: Hex; encryptedAmount: Hex };
+                        const args = decoded.args as { toSolanaHash: Hex; encryptedAmount: Hex };
                         evmHandle = args.encryptedAmount;
                         console.log("Extracted EVM handle:", evmHandle);
                         break;
