@@ -1,19 +1,32 @@
 #!/usr/bin/env bun
 /**
- * Privacy Relayer Server: Base → Solana
+ * Privacy Relayer Server: Base ↔ Solana
  * 
- * HTTP server that:
- * 1. Accepts decrypt authorization signatures from users
- * 2. Monitors ConfidentialBridgeInitiated events on Base
- * 3. Uses user's pre-signed authorization to decrypt via Inco
- * 4. Re-encrypts for Solana TEE and relays to Solana
+ * HTTP server that handles bidirectional cross-chain bridging:
  * 
- * FLOW:
- * 1. User bridges on Base → handle is emitted in event
- * 2. Frontend gets handle from TX receipt
- * 3. User signs decrypt authorization (EIP-712) for the handle
- * 4. Frontend POSTs signature to this server's /authorize endpoint
- * 5. Relayer uses the authorization to decrypt and relay
+ * BASE → SOLANA:
+ * 1. User bridges on Base → encrypted handle emitted on-chain
+ * 2. Frontend sends known plaintext amount to POST /relay
+ * 3. Relayer re-encrypts for Solana TEE and relays to Solana program
+ * 
+ * SOLANA → BASE:
+ * 1. User bridges on Solana → encrypted handle emitted on-chain
+ * 2. Frontend calls Solana attested decrypt to get plaintext
+ * 3. Frontend sends plaintext to POST /relay-to-base
+ * 4. Relayer re-encrypts for EVM (Inco) and calls faucetMint
+ * 
+ * TRUST MODEL:
+ * The relayer sees the plaintext amount during cross-chain re-encryption.
+ * This is architecturally necessary — Inco FHE handles cannot transfer between
+ * EVM and Solana without decrypt → re-encrypt. For production, this relayer
+ * should run inside a TEE (e.g., AWS Nitro Enclaves, Intel SGX) so even the
+ * operator cannot read the plaintext from memory.
+ * 
+ * PRIVACY GUARANTEES:
+ * - On-chain: All amounts are encrypted (euint256 on EVM, Euint128 on Solana)
+ * - From public observers: No one can see amounts, balances, or vault owners
+ * - Total supply: Fully encrypted (no e.reveal)
+ * - From the relayer: The relayer learns plaintext amounts (unavoidable for now)
  * 
  * Usage:
  *   EVM_PRIVATE_KEY=0x... bun run src/privacy-relayer-server.ts
@@ -61,8 +74,8 @@ if (!EVM_PRIVATE_KEY) {
 const evmAccount = privateKeyToAccount(EVM_PRIVATE_KEY as `0x${string}`);
 
 // Contract addresses
-const CONFIDENTIAL_BRIDGE_ADDRESS = "0x9A2672ea89d44b6fFDc018a1026650D008c8a923" as Address;
-const CONFIDENTIAL_TOKEN_ADDRESS = "0x9a30b4431e846FBc6da65bd58F326faeB2F724cb" as Address;
+const CONFIDENTIAL_BRIDGE_ADDRESS = "0x85d2b2C0195990bf11250C8e109D97169b9eD2F6" as Address;
+const CONFIDENTIAL_TOKEN_ADDRESS = "0x7e25DcFa8E53a29Ae2C2fAF18cdbCBDF2d898138" as Address;
 
 // Solana Program IDs
 const BRIDGE_PROGRAM_ID = new PublicKey("EEMKRm1ANMBZHS6yEi67bKVuZDPhztQHVWBzoFnoVbh9");

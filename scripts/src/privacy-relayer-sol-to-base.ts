@@ -61,8 +61,8 @@ if (!EVM_PRIVATE_KEY) {
 const evmAccount = privateKeyToAccount(EVM_PRIVATE_KEY as `0x${string}`);
 
 // Deployed addresses (from base/deployments/base_sepolia.json and .cdark-deployment.json)
-const CONFIDENTIAL_BRIDGE_ADDRESS = "0x9A2672ea89d44b6fFDc018a1026650D008c8a923" as Address;
-const CONFIDENTIAL_TOKEN_ADDRESS = "0x9a30b4431e846FBc6da65bd58F326faeB2F724cb" as Address;
+const CONFIDENTIAL_BRIDGE_ADDRESS = "0x85d2b2C0195990bf11250C8e109D97169b9eD2F6" as Address;
+const CONFIDENTIAL_TOKEN_ADDRESS = "0x7e25DcFa8E53a29Ae2C2fAF18cdbCBDF2d898138" as Address;
 
 // Bridge Program ID
 const BRIDGE_PROGRAM_ID = new PublicKey("EEMKRm1ANMBZHS6yEi67bKVuZDPhztQHVWBzoFnoVbh9");

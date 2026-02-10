@@ -1,6 +1,6 @@
 // Contract addresses - deployment with encrypted bridge (privacy-preserving)
-export const CONFIDENTIAL_BRIDGE_ADDRESS = "0x9A2672ea89d44b6fFDc018a1026650D008c8a923" as const;
-export const CONFIDENTIAL_TOKEN_ADDRESS = "0x9a30b4431e846FBc6da65bd58F326faeB2F724cb" as const;
+export const CONFIDENTIAL_BRIDGE_ADDRESS = "0x85d2b2C0195990bf11250C8e109D97169b9eD2F6" as const;
+export const CONFIDENTIAL_TOKEN_ADDRESS = "0x7e25DcFa8E53a29Ae2C2fAF18cdbCBDF2d898138" as const;
 
 // Bridge relayer address (owner/deployer)
 export const BRIDGE_RELAYER_ADDRESS = "0xF8AF04bF0Ac151f2050436603d81Ba20f449028F" as const;

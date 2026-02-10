@@ -66,8 +66,10 @@ contract DeployConfidentialFull is Script {
         );
         console2.log("   Token registered");
 
-        // NOTE: bridgeRelayer must be set via setBridgeRelayer() after deployment.
-        // The contract uses e.allow(amount, bridgeRelayer) so only the relayer can attestedDecrypt.
+        // 5. Set bridge relayer (deployer is also the relayer for this hackathon)
+        console2.log("5. Setting bridge relayer...");
+        confidentialBridge.setBridgeRelayer(deployer);
+        console2.log("   Bridge relayer set to:", deployer);
 
         vm.stopBroadcast();
 

@@ -1,7 +1,7 @@
 {
   "mockErc20": "0xcb5a0ad14bcd6b623b614cbcad21f7bdd9990d32",
-  "cDarkToken": "0x9a30b4431e846FBc6da65bd58F326faeB2F724cb",
-  "confidentialBridge": "0x9A2672ea89d44b6fFDc018a1026650D008c8a923",
+  "cDarkToken": "0x7e25DcFa8E53a29Ae2C2fAF18cdbCBDF2d898138",
+  "confidentialBridge": "0x85d2b2C0195990bf11250C8e109D97169b9eD2F6",
   "bridgeRelayer": "0xF8AF04bF0Ac151f2050436603d81Ba20f449028F",
   "solanaTokenMint": "3JWs353tgpFRVxb6Ubi85hDm5eBsbGrJFmVqNS8t6V3V",
   "solanaTokenMintBytes32": "0x223403719246903aaf8dc5029034932739e7641a28e51c89c199ab62e27d5598",

@@ -14,7 +14,7 @@ import {ConfidentialBridge} from "../src/ConfidentialBridge.sol";
 ///     --rpc-url base-sepolia --broadcast --verify
 contract SetupConfidentialToken is Script {
     // The ConfidentialBridge (with e.allow() for relayer-only decrypt)
-    address constant CONFIDENTIAL_BRIDGE = 0x9A2672ea89d44b6fFDc018a1026650D008c8a923;
+    address constant CONFIDENTIAL_BRIDGE = 0x85d2b2C0195990bf11250C8e109D97169b9eD2F6;
     
     // Solana token mint for cDARK (in bytes32 format)
     // 3JWs353tgpFRVxb6Ubi85hDm5eBsbGrJFmVqNS8t6V3V in base58
