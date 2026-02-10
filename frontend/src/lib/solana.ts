@@ -280,6 +280,14 @@ export function buildBridgeConfidentialOutInstruction(
         destinationBytes,
     ]);
 
+    // Derive allowance PDAs for Inco ACL grants (remaining_accounts)
+    // remaining_accounts[0]: Allowance PDA for new_balance handle
+    // remaining_accounts[1]: Owner pubkey (allowed to decrypt new_balance)
+    // remaining_accounts[2]: Allowance PDA for actual_amount handle
+    // remaining_accounts[3]: Owner pubkey (allowed to decrypt actual_amount)
+    const allowancePda0 = deriveIncoAllowancePda(owner, 0);
+    const allowancePda1 = deriveIncoAllowancePda(owner, 1);
+
     return new TransactionInstruction({
         programId: new PublicKey(BRIDGE_PROGRAM_ID),
         keys: [
@@ -287,6 +295,11 @@ export function buildBridgeConfidentialOutInstruction(
             { pubkey: vaultPda, isSigner: false, isWritable: true },
             { pubkey: INCO_LIGHTNING_ID, isSigner: false, isWritable: false },
             { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+            // remaining_accounts for allow() grants:
+            { pubkey: allowancePda0, isSigner: false, isWritable: true },  // allowance for new_balance
+            { pubkey: owner, isSigner: false, isWritable: false },         // owner allowed to decrypt
+            { pubkey: allowancePda1, isSigner: false, isWritable: true },  // allowance for actual_amount
+            { pubkey: owner, isSigner: false, isWritable: false },         // owner allowed to decrypt
         ],
         data: instructionData,
     });

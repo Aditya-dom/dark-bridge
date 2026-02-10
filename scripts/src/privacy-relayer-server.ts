@@ -230,6 +230,99 @@ app.post('/relay', async (c) => {
 });
 
 /**
+ * POST /relay-to-base
+ * 
+ * Frontend sends the decrypted plaintext amount (user already called Solana attested decrypt)
+ * along with bridge details. Relayer re-encrypts for EVM using Inco zap.encrypt() and calls
+ * faucetMint on the token contract.
+ * 
+ * Body: {
+ *   solanaTxHash: "...",
+ *   plaintextAmount: "1000000000000000000",  // string bigint
+ *   destinationEvm: "0x...",    // EVM address to mint to
+ *   localToken: "0x...",        // EVM token address
+ * }
+ */
+app.post('/relay-to-base', async (c) => {
+    try {
+        const body = await c.req.json();
+        const { solanaTxHash, plaintextAmount, destinationEvm, localToken } = body;
+
+        if (!solanaTxHash || !plaintextAmount || !destinationEvm) {
+            return c.json({ error: 'Missing required fields: solanaTxHash, plaintextAmount, destinationEvm' }, 400);
+        }
+
+        const tokenAddress = (localToken || CONFIDENTIAL_TOKEN_ADDRESS) as `0x${string}`;
+        const destination = destinationEvm as `0x${string}`;
+        const amount = BigInt(plaintextAmount);
+
+        console.log(`\n📥 Received relay-to-base request:`);
+        console.log(`   Solana TX: ${solanaTxHash}`);
+        console.log(`   Plaintext Amount: ${plaintextAmount} (${Number(amount) / 1e18} tokens)`);
+        console.log(`   Destination EVM: ${destination}`);
+        console.log(`   Token: ${tokenAddress}`);
+
+        // Step 1: Encrypt the plaintext for EVM using Inco zap.encrypt()
+        console.log(`   🔐 Encrypting for EVM via Inco...`);
+        const { supportedChains, handleTypes } = await import("@inco/js");
+        const zap = await getZap();
+
+        const ciphertext = await zap.encrypt(amount, {
+            accountAddress: evmAccount.address,
+            dappAddress: tokenAddress,
+            handleType: handleTypes.euint256,
+        });
+
+        console.log(`   ✅ EVM ciphertext ready (${ciphertext.length} bytes)`);
+
+        // Step 2: Get Inco fee
+        let incoFee: bigint;
+        try {
+            incoFee = await basePublicClient.readContract({
+                address: CONFIDENTIAL_BRIDGE_ADDRESS,
+                abi: parseAbi(["function getIncoFee() view returns (uint256)"]),
+                functionName: "getIncoFee",
+            });
+        } catch {
+            // Default fee
+            incoFee = BigInt("1000000000000000"); // 0.001 ETH
+        }
+        console.log(`   💰 Inco fee: ${incoFee} wei`);
+
+        // Step 3: Call faucetMint on the token contract
+        // faucetMint is publicly callable and accepts Inco-encrypted ciphertext
+        console.log(`   📤 Calling faucetMint on ${tokenAddress}...`);
+        
+        const FAUCET_MINT_ABI = parseAbi([
+            "function faucetMint(address to, bytes encryptedAmount) external payable",
+        ]);
+
+        const hash = await evmWalletClient.writeContract({
+            address: tokenAddress,
+            abi: FAUCET_MINT_ABI,
+            functionName: "faucetMint",
+            args: [destination, ciphertext],
+            value: incoFee,
+        });
+
+        console.log(`   ⏳ TX sent: ${hash}`);
+        const receipt = await basePublicClient.waitForTransactionReceipt({ hash });
+
+        if (receipt.status === "success") {
+            console.log(`   ✅ Minted on Base! TX: ${hash}`);
+            console.log(`   📍 Block: ${receipt.blockNumber}`);
+            return c.json({ success: true, txHash: hash, message: 'Minted on Base' });
+        } else {
+            console.log(`   ❌ Transaction reverted`);
+            return c.json({ error: 'Mint transaction reverted' }, 500);
+        }
+    } catch (error: any) {
+        console.error('Error in /relay-to-base:', error);
+        return c.json({ error: error.message }, 500);
+    }
+});
+
+/**
  * POST /authorize
  * 
  * DEPRECATED — Use /relay instead.
@@ -594,7 +687,7 @@ async function monitorBridgeEvents() {
 // --- Start Server ---
 console.log(`
 ╔═══════════════════════════════════════════════════════════════╗
-║          Privacy Relayer Server (Base → Solana)               ║
+║          Privacy Relayer Server (Base ↔ Solana)              ║
 ╠═══════════════════════════════════════════════════════════════╣
 ║  Relayer:  ${evmAccount.address}  ║
 ║  Bridge:   ${CONFIDENTIAL_BRIDGE_ADDRESS}  ║
@@ -616,7 +709,8 @@ console.log(`✅ Server running at http://localhost:${PORT}`);
 console.log(`
 Endpoints:
   GET  /health          - Server status
-  POST /relay           - Submit decrypted plaintext + bridge info for Solana relay
+  POST /relay           - Submit decrypted plaintext for Solana relay (Base → Solana)
+  POST /relay-to-base   - Submit decrypted plaintext for Base minting (Solana → Base)
   POST /authorize       - (deprecated) Submit decrypt authorization
   GET  /status/:handle  - Check authorization status
   GET  /pending         - List pending bridge events

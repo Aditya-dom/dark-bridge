@@ -71,7 +71,7 @@ export function BridgeForm() {
 
     const { data: walletClient } = useWalletClient();
     const publicClient = usePublicClient();
-    const { publicKey: solanaPublicKey, connected: isSolanaConnected, signTransaction } = useWallet();
+    const { publicKey: solanaPublicKey, connected: isSolanaConnected, signTransaction, signMessage } = useWallet();
     const { connection } = useConnection();
 
     const [direction, setDirection] = useState<Direction>("base-to-solana");
@@ -580,8 +580,8 @@ export function BridgeForm() {
     };
 
     const bridgeSolanaToBase = async () => {
-        if (!solanaPublicKey || !signTransaction || !evmAddress || !publicClient) {
-            setError("Please connect both wallets");
+        if (!solanaPublicKey || !signTransaction || !signMessage || !evmAddress || !publicClient) {
+            setError("Please connect both wallets (with signMessage support)");
             return;
         }
 
@@ -643,7 +643,99 @@ export function BridgeForm() {
 
         console.log("Solana TX signature:", signature);
         setTxHash(signature);
-        setStatus("Transaction confirmed");
+        setStatus("Parsing bridge event...");
+
+        // Step 5: Get the encrypted_amount_handle from the Solana TX logs
+        let amountHandle: string | null = null;
+        try {
+            const txDetails = await connection.getTransaction(signature, {
+                commitment: "confirmed",
+                maxSupportedTransactionVersion: 0,
+            });
+            if (txDetails?.meta?.logMessages) {
+                // Parse ConfidentialBridgeOutEvent from Anchor program data logs
+                for (const log of txDetails.meta.logMessages) {
+                    if (log.startsWith("Program data:")) {
+                        const base64Data = log.replace("Program data: ", "");
+                        const data = Buffer.from(base64Data, "base64");
+                        // Event: discriminator(8) + vault(32) + owner_hash(32) + destination_evm(20) + encrypted_amount_handle(16)
+                        if (data.length >= 8 + 32 + 32 + 20 + 16) {
+                            const offset = 8 + 32 + 32 + 20;
+                            const handleBytes = data.subarray(offset, offset + 16);
+                            // Read u128 little-endian
+                            let handle = BigInt(0);
+                            for (let i = 0; i < 16; i++) {
+                                handle += BigInt(handleBytes[i] ?? 0) << BigInt(i * 8);
+                            }
+                            if (handle > 0n) {
+                                amountHandle = handle.toString();
+                                console.log("Extracted Solana handle:", amountHandle);
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (e) {
+            console.warn("Could not parse bridge event:", e);
+        }
+
+        if (!amountHandle) {
+            console.warn("Could not extract handle from TX, falling back to polling");
+            setWaitingForRelay(true);
+            pollForRelayCompletion("base", startBlock, initialBalance);
+            return;
+        }
+
+        // Step 6: Solana attested decrypt — user signs to prove ownership of the handle
+        setStatus("Decrypting amount (sign to authorize)...");
+        console.log("Calling Solana attested decrypt for handle:", amountHandle);
+
+        let plaintextAmount: bigint;
+        try {
+            const { decrypt } = await import("@inco/solana-sdk/attested-decrypt");
+            const result = await decrypt([amountHandle], {
+                address: solanaPublicKey,
+                signMessage,
+            });
+            if (!result.plaintexts || result.plaintexts.length === 0) {
+                throw new Error("No plaintext returned from attested decrypt");
+            }
+            plaintextAmount = BigInt(result.plaintexts[0]);
+            console.log("Decrypted plaintext amount:", plaintextAmount.toString(), `(${Number(plaintextAmount) / 1e18} tokens)`);
+        } catch (decryptError: unknown) {
+            console.error("Attested decrypt failed:", decryptError);
+            // Fallback: use the user-entered amount (they know how much they bridged)
+            plaintextAmount = amountBigInt;
+            console.log("Using user-entered amount as fallback:", plaintextAmount.toString());
+        }
+
+        // Step 7: Send plaintext to relayer for Base minting
+        setStatus("Sending to relayer...");
+        const relayPayload = {
+            solanaTxHash: signature,
+            plaintextAmount: plaintextAmount.toString(),
+            destinationEvm: evmAddress,
+            localToken: CONFIDENTIAL_TOKEN_ADDRESS,
+        };
+
+        console.log("Posting to relayer /relay-to-base:", relayPayload);
+        try {
+            const relayResponse = await fetch(`${RELAYER_API_URL}/relay-to-base`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(relayPayload),
+            });
+            const relayData = await relayResponse.json();
+            console.log("Relayer response:", relayData);
+
+            if (!relayResponse.ok) {
+                console.warn("Relayer returned error:", relayData.error);
+            }
+        } catch (relayError) {
+            console.warn("Could not reach relayer API (will poll for completion):", relayError);
+        }
+
+        setStatus("Transaction confirmed — waiting for Base mint...");
         setWaitingForRelay(true);
 
         // Poll for relay completion - pass the startBlock we captured before sending

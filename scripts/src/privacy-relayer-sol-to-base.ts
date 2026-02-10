@@ -119,7 +119,7 @@ const CONFIDENTIAL_BRIDGE_ABI = parseAbi([
 ]);
 
 const CONFIDENTIAL_TOKEN_ABI = parseAbi([
-    "function confidentialMint(address to, bytes encryptedAmount) external payable",
+    "function faucetMint(address to, bytes encryptedAmount) external payable",
 ]);
 
 console.log("=== Privacy Relayer (Solana → Base) ===");
@@ -514,8 +514,10 @@ async function decryptWithOfficialSDK(handle: bigint): Promise<bigint | null> {
 
 /**
  * Relay a confidential bridge message from Solana to Base.
+ * @param txSignature - The Solana TX signature containing the bridge event
+ * @param plaintextAmountWei - Optional pre-decrypted amount (from user's attested decrypt)
  */
-async function relayConfidentialToBase(txSignature: string): Promise<boolean> {
+async function relayConfidentialToBase(txSignature: string, plaintextAmountWei?: bigint): Promise<boolean> {
     console.log(`\n=== Processing Solana TX: ${txSignature} ===`);
 
     try {
@@ -583,45 +585,63 @@ async function relayConfidentialToBase(txSignature: string): Promise<boolean> {
         // 5. Decrypt the encrypted handle to get the real amount
         let amountToMint: bigint;
 
-        try {
-            console.log(`   🔓 Attempting to decrypt handle...`);
+        if (plaintextAmountWei && plaintextAmountWei > 0n) {
+            // Pre-decrypted amount provided (from user's attested decrypt via frontend)
+            console.log(`   ✅ Using pre-decrypted amount: ${plaintextAmountWei} (${Number(plaintextAmountWei) / 1e18} tokens)`);
+            amountToMint = plaintextAmountWei;
+        } else {
+            try {
+                console.log(`   🔓 Attempting to decrypt handle...`);
 
-            // Try simple decrypt (for handles with public allow or relayer access)
-            const simpleResult = await requestAttestedDecryptSimple(encryptedAmountHandle);
+                // Try simple decrypt (for handles with public allow or relayer access)
+                const simpleResult = await requestAttestedDecryptSimple(encryptedAmountHandle);
 
-            if (simpleResult !== null && simpleResult.plaintext > 0n) {
-                console.log(`   ✅ Real amount decrypted: ${simpleResult.plaintext} tokens`);
-                amountToMint = simpleResult.plaintext;
-            } else {
-                // Try with official SDK using the decryption wallet
-                console.log(`   📝 Simple decrypt failed, trying with SDK...`);
-                const plaintext = await decryptWithOfficialSDK(encryptedAmountHandle);
-
-                if (plaintext !== null && plaintext > 0n) {
-                    console.log(`   ✅ Real amount decrypted via SDK: ${plaintext} tokens`);
-                    amountToMint = plaintext;
+                if (simpleResult !== null && simpleResult.plaintext > 0n) {
+                    console.log(`   ✅ Real amount decrypted: ${simpleResult.plaintext} tokens`);
+                    amountToMint = simpleResult.plaintext;
                 } else {
-                    console.error(`   ❌ Cannot decrypt handle. Owner needs to grant relayer access.`);
-                    console.error(`   Skipping this transaction.`);
-                    return false;
+                    // Try with official SDK using the decryption wallet
+                    console.log(`   📝 Simple decrypt failed, trying with SDK...`);
+                    const plaintext = await decryptWithOfficialSDK(encryptedAmountHandle);
+
+                    if (plaintext !== null && plaintext > 0n) {
+                        console.log(`   ✅ Real amount decrypted via SDK: ${plaintext} tokens`);
+                        amountToMint = plaintext;
+                    } else {
+                        console.error(`   ❌ Cannot decrypt handle. Owner needs to grant relayer access.`);
+                        console.error(`   Skipping this transaction.`);
+                        return false;
+                    }
                 }
+            } catch (e: any) {
+                console.error(`   ❌ Decrypt failed: ${e.message}`);
+                console.error(`   Cannot relay without real amount. Skipping this transaction.`);
+                return false;
             }
-        } catch (e: any) {
-            console.error(`   ❌ Decrypt failed: ${e.message}`);
-            console.error(`   Cannot relay without real amount. Skipping this transaction.`);
-            return false;
         }
 
         console.log(`   Amount to mint: ${amountToMint} tokens`);
         console.log(`   (Original Solana handle: ${encryptedAmountHandle})`);
 
-        // 6. Encrypt the plaintext amount and call confidentialMint on the token
-        // This encrypts the amount client-side before sending to Base
-        console.log("   Minting on Base via confidentialMint...");
+        // 6. Re-encrypt the plaintext for EVM using Inco zap.encrypt() and call faucetMint
+        // faucetMint is publicly callable (no access control) and accepts Inco-encrypted ciphertext
+        console.log("   Minting on Base via faucetMint with Inco-encrypted ciphertext...");
 
-        // Encode amountToMint as a 32-byte big-endian hex for EVM ciphertext
-        const amountHex = amountToMint.toString(16).padStart(64, "0");
-        const encryptedAmountArg = ("0x" + amountHex) as `0x${string}`;
+        const { Lightning: LightningEvm } = await import("@inco/js/lite");
+        const { supportedChains: evmSupportedChains, handleTypes } = await import("@inco/js");
+        const evmZap = await LightningEvm.latest("devnet", evmSupportedChains.baseSepolia);
+
+        const evmCiphertext = await evmZap.encrypt(amountToMint, {
+            accountAddress: evmAccount.address,
+            dappAddress: CONFIDENTIAL_TOKEN_ADDRESS as `0x${string}`,
+            handleType: handleTypes.euint256,
+        });
+
+        console.log(`   ✅ EVM ciphertext ready (${evmCiphertext.length} bytes)`);
+
+        const FAUCET_MINT_ABI = parseAbi([
+            "function faucetMint(address to, bytes encryptedAmount) external payable",
+        ]);
 
         // Retry with fresh nonce up to 3 times
         let hash: `0x${string}` | null = null;
@@ -638,9 +658,9 @@ async function relayConfidentialToBase(txSignature: string): Promise<boolean> {
 
                 hash = await baseWalletClient.writeContract({
                     address: CONFIDENTIAL_TOKEN_ADDRESS,
-                    abi: CONFIDENTIAL_TOKEN_ABI,
-                    functionName: "confidentialMint",
-                    args: [destinationAddress, encryptedAmountArg],
+                    abi: FAUCET_MINT_ABI,
+                    functionName: "faucetMint",
+                    args: [destinationAddress, evmCiphertext],
                     value: incoFee,
                     nonce: nonce,
                 });
@@ -777,17 +797,27 @@ To test:
 async function main() {
     const arg = process.argv[2];
 
+    // Parse --amount flag (pre-decrypted plaintext from user's attested decrypt)
+    let plaintextAmountWei: bigint | undefined;
+    const amountFlagIndex = process.argv.indexOf("--amount");
+    if (amountFlagIndex !== -1 && process.argv[amountFlagIndex + 1]) {
+        const amountStr = process.argv[amountFlagIndex + 1]!;
+        plaintextAmountWei = BigInt(amountStr);
+        console.log(`📝 Pre-decrypted amount provided: ${plaintextAmountWei} wei`);
+    }
+
     if (arg === "--monitor") {
         await monitorMode();
     } else if (arg === "--demo") {
         await demoMode();
     } else if (arg && arg.length > 50) {
         // Looks like a Solana transaction signature
-        await relayConfidentialToBase(arg);
+        await relayConfidentialToBase(arg, plaintextAmountWei);
     } else {
         console.log("\nUsage:");
         console.log("  Monitor mode:     bun run src/privacy-relayer-sol-to-base.ts --monitor");
         console.log("  Process TX:       bun run src/privacy-relayer-sol-to-base.ts <SOLANA_TX_SIGNATURE>");
+        console.log("  Process TX (pre-decrypted): bun run src/privacy-relayer-sol-to-base.ts <SOLANA_TX_SIGNATURE> --amount <WEI>");
         console.log("  Demo info:        bun run src/privacy-relayer-sol-to-base.ts --demo");
     }
 }
