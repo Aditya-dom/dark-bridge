@@ -654,10 +654,15 @@ export function BridgeForm() {
             });
             if (txDetails?.meta?.logMessages) {
                 // Parse ConfidentialBridgeOutEvent from Anchor program data logs
+                // Discriminator: sha256("event:ConfidentialBridgeOutEvent")[0:8] = fee3f47c36edab41
+                const expectedDiscriminator = "fee3f47c36edab41";
                 for (const log of txDetails.meta.logMessages) {
                     if (log.startsWith("Program data:")) {
                         const base64Data = log.replace("Program data: ", "");
                         const data = Buffer.from(base64Data, "base64");
+                        // Check discriminator first
+                        const disc = Buffer.from(data.subarray(0, 8)).toString("hex");
+                        if (disc !== expectedDiscriminator) continue;
                         // Event: discriminator(8) + vault(32) + owner_hash(32) + destination_evm(20) + encrypted_amount_handle(16)
                         if (data.length >= 8 + 32 + 32 + 20 + 16) {
                             const offset = 8 + 32 + 32 + 20;
