@@ -13,7 +13,7 @@ import {
     checkVaultExists,
     initializeVault,
     getDefaultTokenMint,
-    bridgeConfidentialOut,
+    bridgeConfidentialOutViaRelayer,
     getVaultBalance,
     deriveVaultPda,
 } from "@/lib/solana";
@@ -71,7 +71,7 @@ export function BridgeForm() {
 
     const { data: walletClient } = useWalletClient();
     const publicClient = usePublicClient();
-    const { publicKey: solanaPublicKey, connected: isSolanaConnected, signTransaction } = useWallet();
+    const { publicKey: solanaPublicKey, connected: isSolanaConnected, signTransaction, signMessage } = useWallet();
     const { connection } = useConnection();
 
     const [direction, setDirection] = useState<Direction>("base-to-solana");
@@ -580,7 +580,7 @@ export function BridgeForm() {
     };
 
     const bridgeSolanaToBase = async () => {
-        if (!solanaPublicKey || !signTransaction || !evmAddress || !publicClient) {
+        if (!solanaPublicKey || !signMessage || !evmAddress || !publicClient) {
             setError("Please connect both wallets");
             return;
         }
@@ -601,27 +601,11 @@ export function BridgeForm() {
 
         const tokenMint = getTokenMint();
 
-        // Step 1: Check vault exists
-        setStatus("Checking vault...");
-        const exists = await checkVaultExists(connection, solanaPublicKey, tokenMint);
-        if (!exists) {
-            throw new Error("Solana vault does not exist. Bridge tokens TO Solana first.");
-        }
-
-        // Step 2: Check vault has balance
-        setStatus("Checking balance...");
-        const balance = await getVaultBalance(connection, solanaPublicKey, tokenMint);
-        if (balance === null || balance === 0n) {
-            throw new Error("Solana vault has no balance. Bridge tokens TO Solana first.");
-        }
-        console.log("Vault balance handle:", balance.toString());
-
-        // Step 3: Parse amount (in token units, not wei for Solana)
+        // Step 1: Parse amount
         const amountBigInt = BigInt(Math.floor(parseFloat(amount) * 1e18));
         console.log("Amount to bridge:", amountBigInt.toString());
 
         // IMPORTANT: Capture Base block RIGHT BEFORE sending Solana TX
-        // This ensures we only look for mint logs AFTER this exact moment
         let startBlock: bigint | null = null;
         try {
             startBlock = await publicClient.getBlockNumber();
@@ -630,79 +614,31 @@ export function BridgeForm() {
             console.warn("Could not get block number:", e);
         }
 
-        // Step 4: Send bridge_confidential_out transaction
-        setStatus("Sending Solana transaction...");
-        const signature = await bridgeConfidentialOut(
+        // Step 2: Sign message off-chain and send to relayer
+        // The relayer will call relay_bridge_confidential_out on Solana
+        // so only the relayer's address appears on-chain (SENDER PRIVACY!)
+        setStatus("Signing private bridge request...");
+        const result = await bridgeConfidentialOutViaRelayer(
             connection,
             solanaPublicKey,
             tokenMint,
             evmAddress,
             amountBigInt,
-            signTransaction
+            signMessage,
+            RELAYER_API_URL
         );
 
-        console.log("Solana TX signature:", signature);
+        const signature = result.solanaTxHash;
+        console.log("Solana TX signature (via relayer):", signature);
         setTxHash(signature);
-        setStatus("Parsing bridge event...");
 
-        // Step 5: Get the encrypted_amount_handle from the Solana TX logs
-        let amountHandle: string | null = null;
-        try {
-            const txDetails = await connection.getTransaction(signature, {
-                commitment: "confirmed",
-                maxSupportedTransactionVersion: 0,
-            });
-            if (txDetails?.meta?.logMessages) {
-                // Parse ConfidentialBridgeOutEvent from Anchor program data logs
-                // Discriminator: sha256("event:ConfidentialBridgeOutEvent")[0:8] = fee3f47c36edab41
-                const expectedDiscriminator = "fee3f47c36edab41";
-                for (const log of txDetails.meta.logMessages) {
-                    if (log.startsWith("Program data:")) {
-                        const base64Data = log.replace("Program data: ", "");
-                        const data = Buffer.from(base64Data, "base64");
-                        // Check discriminator first
-                        const disc = Buffer.from(data.subarray(0, 8)).toString("hex");
-                        if (disc !== expectedDiscriminator) continue;
-                        // Event: discriminator(8) + vault(32) + owner_hash(32) + destination_evm(20) + encrypted_amount_handle(16)
-                        if (data.length >= 8 + 32 + 32 + 20 + 16) {
-                            const offset = 8 + 32 + 32 + 20;
-                            const handleBytes = data.subarray(offset, offset + 16);
-                            // Read u128 little-endian
-                            let handle = BigInt(0);
-                            for (let i = 0; i < 16; i++) {
-                                handle += BigInt(handleBytes[i] ?? 0) << BigInt(i * 8);
-                            }
-                            if (handle > 0n) {
-                                amountHandle = handle.toString();
-                                console.log("Extracted Solana handle:", amountHandle);
-                            }
-                        }
-                    }
-                }
-            }
-        } catch (e) {
-            console.warn("Could not parse bridge event:", e);
-        }
-
-        if (!amountHandle) {
-            console.warn("Could not extract handle from TX, falling back to polling");
-            setWaitingForRelay(true);
-            pollForRelayCompletion("base", startBlock, initialBalance);
-            return;
-        }
-
-        // Step 6: Use the user-entered amount directly
-        // No attested decrypt needed — the user already knows the amount they typed.
-        // The allow() PDA can't be pre-derived (handle is computed during TX execution),
-        // so we skip attested decrypt entirely and use the known amount.
-        const plaintextAmount = amountBigInt;
-        console.log("Using user-entered amount for relay:", plaintextAmount.toString(), `(${Number(plaintextAmount) / 1e18} tokens)`);
-
-        // Step 7: Send plaintext to relayer for Base minting
-        setStatus("Sending to relayer...");
+        // Step 3: Now the relayer has already submitted the Solana TX.
+        // We need to relay the plaintext to Base via /relay-to-base.
+        // The relayer endpoint /relay-bridge-out returns solanaTxHash after confirmation.
+        setStatus("Sending to relayer for Base minting...");
         const relayPayload = {
             solanaTxHash: signature,
-            plaintextAmount: plaintextAmount.toString(),
+            plaintextAmount: amountBigInt.toString(),
             destinationEvm: evmAddress,
             localToken: CONFIDENTIAL_TOKEN_ADDRESS,
         };
@@ -718,7 +654,6 @@ export function BridgeForm() {
             console.log("Relayer response:", relayData);
 
             if (relayResponse.ok && relayData.txHash) {
-                // Relayer returned the Base mint TX hash directly — relay is complete!
                 console.log("Relay completed! Base TX:", relayData.txHash);
                 setRelayTxHash(relayData.txHash);
                 setRelayComplete(true);

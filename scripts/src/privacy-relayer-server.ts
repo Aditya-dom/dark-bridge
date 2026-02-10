@@ -362,6 +362,230 @@ app.post('/relay-to-base', async (c) => {
 });
 
 /**
+ * POST /relay-bridge-out
+ * 
+ * SENDER PRIVACY for Solana → Base bridging.
+ * 
+ * Instead of the user calling bridge_confidential_out directly (which exposes their
+ * wallet as the signer/fee payer), the user signs an off-chain Ed25519 message and
+ * sends it to this endpoint. The relayer constructs a relay_bridge_confidential_out
+ * transaction with an Ed25519 pre-instruction for on-chain signature verification.
+ * 
+ * Only the RELAYER's address appears on-chain as the signer — complete sender privacy!
+ * 
+ * Body: {
+ *   ownerPubkey: "base58...",       // User's Solana pubkey
+ *   tokenMint: "base58...",         // Token mint
+ *   destinationEvm: "0x...",        // EVM destination
+ *   encryptedAmount: "hex...",      // Encrypted amount (from @inco/solana-sdk)
+ *   signature: "base64...",         // Ed25519 signature from signMessage
+ *   nonce: number,                  // Replay protection
+ *   deadline: number,               // Expiration timestamp
+ *   plaintextAmount: "string",      // For relay-to-base step
+ * }
+ */
+app.post('/relay-bridge-out', async (c) => {
+    try {
+        const body = await c.req.json();
+        const { ownerPubkey, tokenMint, destinationEvm, encryptedAmount, signature, nonce, deadline, plaintextAmount } = body;
+
+        if (!ownerPubkey || !destinationEvm || !encryptedAmount || !signature || !nonce || !deadline) {
+            return c.json({ error: 'Missing required fields' }, 400);
+        }
+
+        console.log(`\n📥 Received relay-bridge-out request (SENDER PRIVACY):`);
+        console.log(`   Owner: ${ownerPubkey}`);
+        console.log(`   Destination EVM: ${destinationEvm}`);
+        console.log(`   Nonce: ${nonce}`);
+        console.log(`   Deadline: ${deadline}`);
+
+        const ownerKey = new PublicKey(ownerPubkey);
+        const mintKey = new PublicKey(tokenMint || "3JWs353tgpFRVxb6Ubi85hDm5eBsbGrJFmVqNS8t6V3V");
+        
+        // Decode the Ed25519 signature from base64
+        const signatureBytes = Buffer.from(signature, "base64");
+        if (signatureBytes.length !== 64) {
+            return c.json({ error: `Invalid signature length: ${signatureBytes.length}, expected 64` }, 400);
+        }
+
+        // Reconstruct the message that the user signed
+        const evmAddressClean = destinationEvm.startsWith("0x")
+            ? destinationEvm.slice(2)
+            : destinationEvm;
+
+        const nonceBuf = Buffer.alloc(8);
+        nonceBuf.writeBigUInt64LE(BigInt(nonce), 0);
+        const deadlineBuf = Buffer.alloc(8);
+        deadlineBuf.writeBigInt64LE(BigInt(deadline), 0);
+
+        const message = Buffer.concat([
+            ownerKey.toBuffer(),                    // 32 bytes
+            Buffer.from(evmAddressClean, "hex"),    // 20 bytes
+            nonceBuf,                                // 8 bytes
+            deadlineBuf,                             // 8 bytes
+        ]);
+
+        console.log(`   📝 Message length: ${message.length} bytes`);
+
+        // Convert encrypted amount hex to bytes
+        const encryptedAmountBytes = Buffer.from(encryptedAmount, "hex");
+        console.log(`   🔐 Encrypted amount: ${encryptedAmountBytes.length} bytes`);
+
+        // Get relayer's Solana keypair
+        const payerKeypair = getSolanaWeb3Keypair();
+        console.log(`   🔑 Relayer: ${payerKeypair.publicKey.toBase58()}`);
+
+        // Derive PDAs
+        const { keccak256: keccak256Hash } = await import("viem");
+        const ownerHash = Buffer.from(keccak256Hash(new Uint8Array(ownerKey.toBuffer())).slice(2), "hex");
+
+        const [vaultPda] = PublicKey.findProgramAddressSync(
+            [Buffer.from("confidential_vault"), ownerHash, mintKey.toBuffer()],
+            BRIDGE_PROGRAM_ID
+        );
+        const [bridgeState] = PublicKey.findProgramAddressSync(
+            [Buffer.from("bridge")],
+            BRIDGE_PROGRAM_ID
+        );
+
+        // Check vault exists
+        const solConnection = new Connection(config.solana.rpcUrl, "confirmed");
+        const vaultAccountInfo = await solConnection.getAccountInfo(vaultPda);
+        if (!vaultAccountInfo) {
+            console.log(`   ❌ Vault doesn't exist for owner`);
+            return c.json({ error: 'Vault does not exist. Initialize it first.' }, 400);
+        }
+
+        // Build Ed25519 pre-instruction for on-chain signature verification
+        // Format: https://docs.solanalabs.com/runtime/programs#ed25519-program
+        // struct Ed25519SignatureOffsets {
+        //   signature_offset: u16,
+        //   signature_instruction_index: u16,
+        //   public_key_offset: u16,
+        //   public_key_instruction_index: u16,
+        //   message_data_offset: u16,
+        //   message_data_size: u16,
+        //   message_instruction_index: u16,
+        // }
+        const ED25519_PROGRAM_ID = new PublicKey("Ed25519SigVerify111111111111111111111111111");
+        
+        const headerSize = 2; // num_sigs(1) + padding(1)
+        const sigDescriptorSize = 14; // 7 x u16 = 14 bytes per signature descriptor
+        const dataStart = headerSize + sigDescriptorSize;
+        
+        const sigOffset = dataStart;
+        const sigLen = 64;
+        const pubkeyOffset = sigOffset + sigLen;
+        const pubkeyLen = 32;
+        const msgOffset = pubkeyOffset + pubkeyLen;
+        const msgLen = message.length;
+
+        // Use 0xFFFF for instruction_index to reference data within THIS instruction
+        const CURRENT_IX = 0xFFFF;
+
+        const ed25519Data = Buffer.alloc(dataStart + sigLen + pubkeyLen + msgLen);
+        let offset = 0;
+        // Header
+        ed25519Data[offset++] = 1;   // num_sigs
+        ed25519Data[offset++] = 0;   // padding
+        // Signature descriptor (7 x u16)
+        ed25519Data.writeUInt16LE(sigOffset, offset); offset += 2;      // signature_offset
+        ed25519Data.writeUInt16LE(CURRENT_IX, offset); offset += 2;     // signature_instruction_index (0xFFFF = this ix)
+        ed25519Data.writeUInt16LE(pubkeyOffset, offset); offset += 2;   // public_key_offset
+        ed25519Data.writeUInt16LE(CURRENT_IX, offset); offset += 2;     // public_key_instruction_index
+        ed25519Data.writeUInt16LE(msgOffset, offset); offset += 2;      // message_data_offset
+        ed25519Data.writeUInt16LE(msgLen, offset); offset += 2;         // message_data_size
+        ed25519Data.writeUInt16LE(CURRENT_IX, offset); offset += 2;     // message_instruction_index
+        // Data section
+        signatureBytes.copy(ed25519Data, sigOffset);
+        ownerKey.toBuffer().copy(ed25519Data, pubkeyOffset);
+        message.copy(ed25519Data, msgOffset);
+
+        const ed25519Ix = new TransactionInstruction({
+            programId: ED25519_PROGRAM_ID,
+            keys: [],
+            data: ed25519Data,
+        });
+
+        // Build relay_bridge_confidential_out instruction
+        const crypto = await import("crypto");
+        const discriminator = crypto.createHash("sha256")
+            .update("global:relay_bridge_confidential_out")
+            .digest()
+            .slice(0, 8);
+
+        // Destination EVM as 20 bytes
+        const destinationBytes = Buffer.from(evmAddressClean, "hex");
+
+        // Instruction data: discriminator + Vec<u8>(encrypted_amount) + [u8;20](destination) + Pubkey(vault_owner) + [u8;64](signature) + u64(nonce) + i64(deadline)
+        const encLenBuf = Buffer.alloc(4);
+        encLenBuf.writeUInt32LE(encryptedAmountBytes.length, 0);
+
+        const sigBuf = Buffer.from(signatureBytes); // 64 bytes
+        const nonceBufInst = Buffer.alloc(8);
+        nonceBufInst.writeBigUInt64LE(BigInt(nonce), 0);
+        const deadlineBufInst = Buffer.alloc(8);
+        deadlineBufInst.writeBigInt64LE(BigInt(deadline), 0);
+
+        const instructionData = Buffer.concat([
+            discriminator,                           // 8 bytes
+            encLenBuf,                               // 4 bytes (Vec length prefix)
+            encryptedAmountBytes,                    // variable
+            destinationBytes,                        // 20 bytes
+            ownerKey.toBuffer(),                     // 32 bytes (vault_owner)
+            sigBuf,                                  // 64 bytes (message_signature)
+            nonceBufInst,                            // 8 bytes (nonce)
+            deadlineBufInst,                         // 8 bytes (deadline)
+        ]);
+
+        // Instructions sysvar
+        const SYSVAR_INSTRUCTIONS = new PublicKey("Sysvar1nstructions1111111111111111111111111");
+
+        const relayIx = new TransactionInstruction({
+            programId: BRIDGE_PROGRAM_ID,
+            keys: [
+                { pubkey: payerKeypair.publicKey, isSigner: true, isWritable: true },   // relayer
+                { pubkey: bridgeState, isSigner: false, isWritable: false },             // bridge
+                { pubkey: vaultPda, isSigner: false, isWritable: true },                 // vault
+                { pubkey: INCO_LIGHTNING_ID, isSigner: false, isWritable: false },       // inco_lightning_program
+                { pubkey: SYSVAR_INSTRUCTIONS, isSigner: false, isWritable: false },     // instructions_sysvar
+                { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }, // system_program
+            ],
+            data: instructionData,
+        });
+
+        // Build and send transaction with Ed25519 pre-instruction + relay instruction
+        console.log(`   🚀 Sending relay_bridge_confidential_out transaction...`);
+        const { Transaction: SolTx, sendAndConfirmTransaction } = await import("@solana/web3.js");
+        
+        const tx = new SolTx();
+        tx.add(ed25519Ix);  // Ed25519 signature verification (must come first!)
+        tx.add(relayIx);    // relay_bridge_confidential_out
+
+        const solanaTxHash = await sendAndConfirmTransaction(
+            solConnection,
+            tx,
+            [payerKeypair],
+            { commitment: "confirmed" }
+        );
+
+        console.log(`   ✅ Solana TX confirmed: ${solanaTxHash}`);
+        console.log(`   🔒 Only relayer ${payerKeypair.publicKey.toBase58()} is visible on-chain!`);
+        console.log(`   Explorer: https://explorer.solana.com/tx/${solanaTxHash}?cluster=devnet`);
+
+        return c.json({ 
+            success: true, 
+            solanaTxHash,
+            message: 'Bridge-out submitted via relayer (sender privacy preserved)',
+        });
+
+    } catch (error: any) {
+        console.error('Error in /relay-bridge-out:', error);
+        return c.json({ error: error.message }, 500);
+    }
+});
+
+/**
  * POST /authorize
  * 
  * DEPRECATED — Use /relay instead.
@@ -791,10 +1015,12 @@ serve({
 console.log(`✅ Server running at http://localhost:${PORT}`);
 console.log(`
 Endpoints:
-  GET  /health          - Server status
-  POST /relay           - Submit decrypted plaintext for Solana relay (Base → Solana)
-  POST /relay-to-base   - Submit decrypted plaintext for Base minting (Solana → Base)
-  POST /authorize       - (deprecated) Submit decrypt authorization
-  GET  /status/:handle  - Check authorization status
-  GET  /pending         - List pending bridge events
+  GET  /health            - Server status
+  POST /relay             - Submit decrypted plaintext for Solana relay (Base → Solana)
+  POST /relay-to-base     - Submit decrypted plaintext for Base minting (Solana → Base)
+  POST /relay-bridge-out  - Relay bridge-out from Solana via relayer (SENDER PRIVACY)
+  POST /authorize         - (deprecated) Submit decrypt authorization
+  GET  /status/:handle    - Check authorization status
+  GET  /tx/:hash          - Check relay completion by TX hash
+  GET  /pending           - List pending bridge events
 `);
