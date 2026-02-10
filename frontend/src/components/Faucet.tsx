@@ -95,15 +95,16 @@ export function Faucet() {
             });
 
             setHash(txHash);
-        } catch (err: any) {
+        } catch (err: unknown) {
             console.error("Faucet error:", err);
             let errorMsg = "Transaction failed";
-            if (err.message?.includes("user rejected") || err.message?.includes("User rejected")) {
+            const e = err as { message?: string; shortMessage?: string };
+            if (e.message?.includes("user rejected") || e.message?.includes("User rejected")) {
                 errorMsg = "Transaction rejected by user";
-            } else if (err.shortMessage) {
-                errorMsg = err.shortMessage;
-            } else if (err.message) {
-                errorMsg = err.message.slice(0, 300);
+            } else if (e.shortMessage) {
+                errorMsg = e.shortMessage;
+            } else if (e.message) {
+                errorMsg = e.message.slice(0, 300);
             }
             setError(errorMsg);
         } finally {

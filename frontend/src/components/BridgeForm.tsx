@@ -423,7 +423,8 @@ export function BridgeForm() {
 
         setStatus("Encrypting amount...");
         // Import and initialize Inco Lightning for client-side encryption
-        const { Lightning, supportedChains, handleTypes } = await import("@inco/js");
+        const { Lightning } = await import("@inco/js/lite");
+        const { supportedChains, handleTypes } = await import("@inco/js");
         const zap = await Lightning.latest("testnet", supportedChains.baseSepolia);
 
         // Encrypt the amount client-side — only the ciphertext goes on-chain
