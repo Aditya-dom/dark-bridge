@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { useAccount, useWalletClient, usePublicClient } from "wagmi";
-import { parseAbi, parseUnits, toHex } from "viem";
+import { parseAbi, parseUnits, toHex, decodeEventLog, type Hex } from "viem";
 import { useWallet, useConnection } from "@solana/wallet-adapter-react";
 import {
     CONFIDENTIAL_BRIDGE_ADDRESS,
@@ -32,6 +32,21 @@ const BRIDGE_ABI = parseAbi([
     "function bridgePrivateToSolana(address localToken, bytes32 toSolana, bytes encryptedAmount) external payable",
     "function getIncoFee() external view returns (uint256)",
 ]);
+
+// Full ABI for event decoding (parseAbi can't handle indexed euint256 easily)
+const CONFIDENTIAL_BRIDGE_EVENT_ABI = [
+    {
+        type: "event" as const,
+        name: "ConfidentialBridgeInitiated",
+        inputs: [
+            { name: "nonce", type: "uint256", indexed: true },
+            { name: "localToken", type: "address", indexed: true },
+            { name: "remoteToken", type: "bytes32", indexed: true },
+            { name: "toSolana", type: "bytes32", indexed: false },
+            { name: "encryptedAmount", type: "bytes32", indexed: false },
+        ],
+    },
+] as const;
 
 // Direction enum
 type Direction = "base-to-solana" | "solana-to-base";
@@ -454,7 +469,6 @@ export function BridgeForm() {
         }
 
         // Step 4: Call bridgePrivateToSolana with client-encrypted amount
-        // The amount is encrypted client-side — only the relayer (via attestedDecrypt) can learn it
         setStatus("Sending bridge transaction...");
         const hash = await walletClient.writeContract({
             address: CONFIDENTIAL_BRIDGE_ADDRESS as `0x${string}`,
@@ -476,7 +490,89 @@ export function BridgeForm() {
         console.log("Bridge transaction confirmed:", receipt.transactionHash);
         console.log("Block number:", receipt.blockNumber);
 
-        setStatus("Transaction confirmed");
+        // Step 5: Extract the encrypted handle from the ConfidentialBridgeInitiated event
+        setStatus("Extracting encrypted handle...");
+        let evmHandle: Hex | null = null;
+        for (const log of receipt.logs) {
+            if (log.address.toLowerCase() === CONFIDENTIAL_BRIDGE_ADDRESS.toLowerCase()) {
+                try {
+                    const decoded = decodeEventLog({
+                        abi: CONFIDENTIAL_BRIDGE_EVENT_ABI,
+                        data: log.data,
+                        topics: [...log.topics] as [`0x${string}`, ...`0x${string}`[]],
+                    });
+                    if (decoded.eventName === "ConfidentialBridgeInitiated") {
+                        const args = decoded.args as { toSolana: Hex; encryptedAmount: Hex };
+                        evmHandle = args.encryptedAmount;
+                        console.log("Extracted EVM handle:", evmHandle);
+                        break;
+                    }
+                } catch {
+                    // Not our event, continue
+                }
+            }
+        }
+
+        if (!evmHandle) {
+            throw new Error("Could not find ConfidentialBridgeInitiated event in receipt");
+        }
+
+        // Step 6: User calls attestedDecrypt to decrypt the handle
+        // The user was granted e.allow() in the contract, so they can decrypt
+        setStatus("Decrypting amount (sign to authorize)...");
+        console.log("Calling attestedDecrypt with user wallet for handle:", evmHandle);
+
+        const decryptResults = await zap.attestedDecrypt(
+            walletClient as any,
+            [evmHandle as `0x${string}`],
+        );
+
+        if (!decryptResults || decryptResults.length === 0) {
+            throw new Error("Failed to decrypt handle — no results from Inco");
+        }
+
+        // Extract plaintext from the attestation result
+        let plaintextAmount: bigint;
+        const decryptResult = decryptResults[0];
+        if (typeof decryptResult === "bigint") {
+            plaintextAmount = decryptResult;
+        } else if (decryptResult && typeof decryptResult === "object" && "plaintext" in decryptResult) {
+            const pt = (decryptResult as { plaintext: { value: bigint } }).plaintext;
+            plaintextAmount = BigInt(pt.value);
+        } else {
+            plaintextAmount = BigInt(String(decryptResult));
+        }
+
+        console.log("Decrypted plaintext amount:", plaintextAmount.toString(), `(${Number(plaintextAmount) / 1e18} tokens)`);
+
+        // Step 7: Send plaintext + bridge info to relayer API for Solana relay
+        setStatus("Sending to relayer...");
+        const relayPayload = {
+            baseTxHash: receipt.transactionHash,
+            plaintextAmount: plaintextAmount.toString(),
+            toSolana: solanaBytes32,
+            localToken: CONFIDENTIAL_TOKEN_ADDRESS,
+        };
+
+        console.log("Posting to relayer:", relayPayload);
+        try {
+            const relayResponse = await fetch(`${RELAYER_API_URL}/relay`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(relayPayload),
+            });
+            const relayData = await relayResponse.json();
+            console.log("Relayer response:", relayData);
+
+            if (!relayResponse.ok) {
+                console.warn("Relayer returned error:", relayData.error);
+                // Don't throw — still poll for completion since the relayer monitor may pick it up
+            }
+        } catch (relayError) {
+            console.warn("Could not reach relayer API (will poll for completion):", relayError);
+        }
+
+        setStatus("Transaction confirmed — waiting for Solana relay...");
         setWaitingForRelay(true);
 
         // Poll for relay completion - pass Base TX hash for direct relayer lookup

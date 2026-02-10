@@ -41,7 +41,7 @@ import { privateKeyToAccount } from "viem/accounts";
 import { Connection, PublicKey, SystemProgram, TransactionInstruction } from "@solana/web3.js";
 
 import { CONFIGS } from "@internal/constants";
-import { buildAndSendTransaction, getSolanaCliConfigKeypairSigner } from "@internal/sol";
+import { buildAndSendTransaction, getSolanaCliConfigKeypairSigner, getSolanaWeb3Keypair } from "@internal/sol";
 
 // Inco SDKs
 import { Lightning } from "@inco/js/lite";
@@ -159,8 +159,80 @@ app.get('/health', (c) => {
 });
 
 /**
+ * POST /relay
+ * 
+ * Frontend sends the decrypted plaintext amount (user already called attestedDecrypt)
+ * along with bridge details. Relayer re-encrypts for Solana TEE and relays.
+ * 
+ * Body: {
+ *   baseTxHash: "0x...",
+ *   plaintextAmount: "1000000000000000000",  // string bigint
+ *   toSolana: "0x...",    // bytes32 Solana pubkey
+ *   localToken: "0x...",  // EVM token address
+ * }
+ */
+app.post('/relay', async (c) => {
+    try {
+        const body = await c.req.json();
+        const { baseTxHash, plaintextAmount, toSolana, localToken } = body;
+
+        if (!baseTxHash || !plaintextAmount || !toSolana) {
+            return c.json({ error: 'Missing required fields: baseTxHash, plaintextAmount, toSolana' }, 400);
+        }
+
+        console.log(`\n📥 Received relay request from frontend:`);
+        console.log(`   Base TX: ${baseTxHash}`);
+        console.log(`   Plaintext Amount: ${plaintextAmount}`);
+        console.log(`   To Solana: ${toSolana}`);
+
+        // Check if already processed
+        const existingEvent = Array.from(pendingBridgeEvents.values())
+            .find(e => e.txHash.toLowerCase() === baseTxHash.toLowerCase());
+        if (existingEvent?.processed) {
+            console.log(`   ⚠️ Already processed, skipping`);
+            return c.json({ success: true, message: 'Already relayed', alreadyProcessed: true });
+        }
+
+        // Re-encrypt the plaintext for Solana TEE
+        console.log(`   📥 Re-encrypting for Solana TEE...`);
+        const plaintext = BigInt(plaintextAmount);
+        const solanaCiphertext = await encryptValue(plaintext);
+        const ciphertextBytes = hexToBuffer(solanaCiphertext);
+        console.log(`   ✅ Solana ciphertext: ${ciphertextBytes.length} bytes`);
+
+        // Build the bridge event from the request
+        const bridgeEvent: BridgeEvent = {
+            txHash: baseTxHash as Hex,
+            nonce: 0n,
+            localToken: (localToken || CONFIDENTIAL_TOKEN_ADDRESS) as Address,
+            remoteToken: '0x0' as Hex,
+            toSolana: toSolana as Hex,
+            encryptedAmount: '0x0' as Hex,
+            timestamp: Date.now(),
+            processed: false,
+        };
+
+        // Relay to Solana
+        const success = await relayToSolana(bridgeEvent, new Uint8Array(ciphertextBytes));
+
+        if (success) {
+            bridgeEvent.processed = true;
+            pendingBridgeEvents.set(baseTxHash, bridgeEvent);
+            console.log(`   ✅ Successfully relayed to Solana!`);
+            return c.json({ success: true, message: 'Relayed to Solana' });
+        } else {
+            return c.json({ error: 'Failed to relay to Solana' }, 500);
+        }
+    } catch (error: any) {
+        console.error('Error in /relay:', error);
+        return c.json({ error: error.message }, 500);
+    }
+});
+
+/**
  * POST /authorize
  * 
+ * DEPRECATED — Use /relay instead.
  * Frontend submits decrypt authorization after user signs.
  * Body: {
  *   handle: "0x...",
@@ -343,15 +415,13 @@ async function processAuthorization(handle: string): Promise<boolean> {
 async function relayToSolana(bridgeEvent: BridgeEvent, encryptedAmountBytes: Uint8Array): Promise<boolean> {
     try {
         const recipientPubkey = bytes32ToPublicKey(bridgeEvent.toSolana);
-        const remoteTokenBytes = toBytes(bridgeEvent.remoteToken);
-        const tokenMint = new PublicKey(remoteTokenBytes);
+        // Use the known Solana token mint (not from remoteToken which may be 0x0 for /relay calls)
+        const SOLANA_TOKEN_MINT = new PublicKey("3JWs353tgpFRVxb6Ubi85hDm5eBsbGrJFmVqNS8t6V3V");
+        const tokenMint = SOLANA_TOKEN_MINT;
         
         console.log(`   🚀 Relaying to Solana:`);
         console.log(`      Recipient: ${recipientPubkey.toBase58()}`);
         console.log(`      Token Mint: ${tokenMint.toBase58()}`);
-
-        // Get Solana signer
-        const payer = await getSolanaCliConfigKeypairSigner();
 
         // Find PDAs
         // Hash owner with keccak256 for privacy-preserving PDA (matches Rust program)
@@ -382,7 +452,9 @@ async function relayToSolana(bridgeEvent: BridgeEvent, encryptedAmountBytes: Uin
         const vaultAccountInfo = await connection.getAccountInfo(vaultPda);
         
         if (!vaultAccountInfo) {
-            console.log(`   ⚠️ Vault doesn't exist. Recipient needs to initialize first.`);
+            console.log(`   ⚠️ Vault doesn't exist for recipient ${recipientPubkey.toBase58()}`);
+            console.log(`   Vault PDA: ${vaultPda.toBase58()}`);
+            console.log(`   The recipient must initialize a ConfidentialVault first.`);
             return false;
         }
 
@@ -405,24 +477,49 @@ async function relayToSolana(bridgeEvent: BridgeEvent, encryptedAmountBytes: Uin
             Buffer.from(baseSender),
         ]);
 
-        const accounts = [
-            { pubkey: bridgeAuthority, isSigner: false, isWritable: true },    // bridge_authority (PDA signer)
-            { pubkey: bridgeState, isSigner: false, isWritable: false },        // bridge
-            { pubkey: recipientPubkey, isSigner: false, isWritable: false },    // owner (for Inco allow() grants)
-            { pubkey: vaultPda, isSigner: false, isWritable: true },            // vault
-            { pubkey: INCO_LIGHTNING_ID, isSigner: false, isWritable: false },  // inco_lightning_program
-        ];
-
-        // Note: This needs proper Anchor instruction building
-        // For now, log what would be sent
         console.log(`   📦 Instruction data: ${instructionData.length} bytes`);
-        console.log(`   ✅ Relay transaction prepared (implement full Solana TX)`);
+
+        // Get Solana keypair for signing
+        const payerKeypair = getSolanaWeb3Keypair();
+        console.log(`   🔑 Using Solana payer: ${payerKeypair.publicKey.toBase58()}`);
+
+        const { Transaction, sendAndConfirmTransaction, TransactionInstruction: TxIx } = await import("@solana/web3.js");
+
+        const instruction = new TxIx({
+            programId: BRIDGE_PROGRAM_ID,
+            keys: [
+                { pubkey: payerKeypair.publicKey, isSigner: true, isWritable: true },   // relayer
+                { pubkey: bridgeState, isSigner: false, isWritable: false },             // bridge
+                { pubkey: bridgeAuthority, isSigner: false, isWritable: true },          // bridge_authority
+                { pubkey: recipientPubkey, isSigner: false, isWritable: false },         // owner
+                { pubkey: vaultPda, isSigner: false, isWritable: true },                 // vault
+                { pubkey: INCO_LIGHTNING_ID, isSigner: false, isWritable: false },       // inco_lightning_program
+                { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }, // system_program
+            ],
+            data: instructionData,
+        });
+
+        console.log(`   🚀 Sending Solana transaction...`);
+        const tx = new Transaction().add(instruction);
+        const signature = await sendAndConfirmTransaction(
+            connection,
+            tx,
+            [payerKeypair],
+            { commitment: "confirmed" }
+        );
+
+        console.log(`   ✅ Solana TX confirmed: ${signature}`);
+        console.log(`   Explorer: https://explorer.solana.com/tx/${signature}?cluster=devnet`);
 
         bridgeEvent.processed = true;
         return true;
 
     } catch (error: any) {
         console.error(`   ❌ Relay failed:`, error.message);
+        if (error.logs) {
+            console.error(`   Logs:`);
+            error.logs.forEach((log: string) => console.error(`      ${log}`));
+        }
         return false;
     }
 }
@@ -519,7 +616,8 @@ console.log(`✅ Server running at http://localhost:${PORT}`);
 console.log(`
 Endpoints:
   GET  /health          - Server status
-  POST /authorize       - Submit decrypt authorization
+  POST /relay           - Submit decrypted plaintext + bridge info for Solana relay
+  POST /authorize       - (deprecated) Submit decrypt authorization
   GET  /status/:handle  - Check authorization status
   GET  /pending         - List pending bridge events
 `);

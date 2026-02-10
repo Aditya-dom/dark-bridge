@@ -7,25 +7,25 @@
  * 
  * ARCHITECTURE NOTES:
  * ==================
- * The ideal cross-chain re-encryption flow requires the USER to sign a decrypt authorization
- * before bridging, because Inco's attestedDecrypt requires owner's signature.
+ * attestedDecrypt requires the USER's wallet signature (EIP-712). The relayer cannot
+ * call attestedDecrypt server-side — only the user (the address granted e.allow()) can.
  * 
- * e.allow(amount, relayer) grants on-chain computation access, NOT off-chain decryption.
+ * CORRECT FLOW:
+ * 1. User bridges on Base → TX confirmed, handle emitted
+ * 2. User calls attestedDecrypt in the frontend → gets plaintext
+ * 3. Frontend POSTs plaintext to relayer server (/relay endpoint)
+ * 4. Relayer re-encrypts for Solana TEE and relays to Solana
  * 
- * APPROACH:
- * 1. Parse the encrypted bridge event to get the EVM handle
- * 2. Use attestedDecrypt (relayer has e.allow() access) to get the plaintext off-chain
- * 3. Re-encrypt plaintext for Solana TEE using encryptValue
+ * This monitor file is a FALLBACK that can process single TX hashes if the plaintext
+ * is provided via --amount flag. For the normal flow, use privacy-relayer-server.ts.
  * 
  * Usage:
  *   EVM_PRIVATE_KEY=0x... bun run src/privacy-relayer-base-to-sol.ts --monitor
- *   EVM_PRIVATE_KEY=0x... bun run src/privacy-relayer-base-to-sol.ts <BASE_TX_HASH>
+ *   EVM_PRIVATE_KEY=0x... bun run src/privacy-relayer-base-to-sol.ts <BASE_TX_HASH> --amount <PLAINTEXT_WEI>
  */
 
 // IMPORTANT: Bypass TLS certificate verification for Inco KMS in development
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
-
-// The relayer uses attestedDecrypt (granted via e.allow in the contract) to learn amounts off-chain.
 
 import {
     createSolanaRpc,
@@ -563,8 +563,10 @@ async function crossChainReencrypt(evmHandle: Hex): Promise<Uint8Array> {
 
 /**
  * Relay a confidential bridge message from Base to Solana.
+ * @param txHash - The Base transaction hash
+ * @param plaintextAmountWei - Optional plaintext amount (provided by user via frontend or --amount flag)
  */
-async function relayConfidentialToSolana(txHash: string): Promise<boolean> {
+async function relayConfidentialToSolana(txHash: string, plaintextAmountWei?: string): Promise<boolean> {
     console.log(`\n=== Processing Base TX: ${txHash} ===`);
 
     try {
@@ -588,18 +590,36 @@ async function relayConfidentialToSolana(txHash: string): Promise<boolean> {
         console.log(`      To Solana: ${bridgeEvent.toSolana}`);
         console.log(`      EVM Handle: ${bridgeEvent.encryptedAmount}`);
 
-        // 3. Use attestedDecrypt to get the plaintext (relayer has e.allow() access)
         const recipientPubkey = bytes32ToPublicKey(bridgeEvent.toSolana);
         const baseSender = toBytes(evmAccount.address).slice(0, 20);
         console.log(`   Recipient: ${recipientPubkey.toBase58()}`);
 
         let encryptedAmountBytes: Uint8Array;
-        try {
-            encryptedAmountBytes = await crossChainReencrypt(bridgeEvent.encryptedAmount);
-        } catch (err: any) {
-            console.error(`   ❌ crossChainReencrypt failed: ${err.message}`);
-            console.error(`   Cannot relay without real amount. Skipping this transaction.`);
-            return false;
+
+        if (plaintextAmountWei) {
+            // 3a. User provided plaintext amount (from frontend attestedDecrypt or CLI --amount)
+            console.log(`   📥 Using provided plaintext amount: ${plaintextAmountWei}`);
+            const plaintext = BigInt(plaintextAmountWei);
+            console.log(`      Amount: ${plaintext} (${Number(plaintext) / 1e18} tokens)`);
+
+            console.log(`      Re-encrypting for Solana TEE...`);
+            const solanaCiphertext = await encryptValue(plaintext);
+            const ciphertextBytes = hexToBuffer(solanaCiphertext);
+            encryptedAmountBytes = new Uint8Array(ciphertextBytes);
+            console.log(`      ✅ Solana ciphertext: ${encryptedAmountBytes.length} bytes`);
+        } else {
+            // 3b. Try attestedDecrypt server-side (may fail — user should use /relay endpoint instead)
+            console.log(`   ⚠️ No plaintext provided. Attempting server-side attestedDecrypt (may fail)...`);
+            console.log(`   💡 For reliable operation, use privacy-relayer-server.ts with the /relay endpoint.`);
+            try {
+                encryptedAmountBytes = await crossChainReencrypt(bridgeEvent.encryptedAmount);
+            } catch (err: any) {
+                console.error(`   ❌ crossChainReencrypt failed: ${err.message}`);
+                console.error(`   ❌ attestedDecrypt requires the USER's wallet signature.`);
+                console.error(`   💡 Use: bun run src/privacy-relayer-base-to-sol.ts ${txHash} --amount <PLAINTEXT_WEI>`);
+                console.error(`   💡 Or run privacy-relayer-server.ts and have the frontend POST to /relay`);
+                return false;
+            }
         }
 
         console.log(`   ✅ Solana ciphertext ready: ${encryptedAmountBytes.length} bytes`);
@@ -732,12 +752,18 @@ async function main() {
     } else if (arg === "--demo") {
         await demoMode();
     } else if (arg && arg.startsWith("0x")) {
-        await relayConfidentialToSolana(arg);
+        // Check for --amount flag
+        const amountIdx = process.argv.indexOf("--amount");
+        const plaintextAmount = amountIdx !== -1 ? process.argv[amountIdx + 1] : undefined;
+        await relayConfidentialToSolana(arg, plaintextAmount);
     } else {
         console.log("\nUsage:");
         console.log("  Monitor mode:     bun run src/privacy-relayer-base-to-sol.ts --monitor");
-        console.log("  Process TX:       bun run src/privacy-relayer-base-to-sol.ts <BASE_TX_HASH>");
+        console.log("  Process TX:       bun run src/privacy-relayer-base-to-sol.ts <BASE_TX_HASH> --amount <PLAINTEXT_WEI>");
         console.log("  Demo info:        bun run src/privacy-relayer-base-to-sol.ts --demo");
+        console.log("");
+        console.log("  NOTE: attestedDecrypt must be done by the USER in the frontend.");
+        console.log("  For the full flow, use privacy-relayer-server.ts with the /relay endpoint.");
     }
 }
 
