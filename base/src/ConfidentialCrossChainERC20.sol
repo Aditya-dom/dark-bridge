@@ -48,6 +48,12 @@ contract ConfidentialCrossChainERC20 is Initializable {
     /// @notice The underlying ERC20 token (for deposit/withdraw).
     address private _underlyingToken;
 
+    /// @notice Authorized minter address (relayer) for cross-chain operations.
+    address private _authorizedMinter;
+
+    /// @notice Whether the testnet faucet is enabled (disabled on mainnet).
+    bool public faucetEnabled;
+
     //////////////////////////////////////////////////////////////
     ///                       Events                           ///
     //////////////////////////////////////////////////////////////
@@ -65,10 +71,10 @@ contract ConfidentialCrossChainERC20 is Initializable {
     event ConfidentialBurn(address indexed from, euint256 amount);
 
     /// @notice Emitted when plaintext tokens are deposited and encrypted.
-    event Deposit(address indexed from, uint256 plaintextAmount, euint256 encryptedAmount);
+    event Deposit(address indexed from, euint256 encryptedAmount);
 
     /// @notice Emitted when encrypted tokens are withdrawn using attestation.
-    event Withdraw(address indexed to, uint256 plaintextAmount);
+    event Withdraw(address indexed to);
 
     //////////////////////////////////////////////////////////////
     ///                       Errors                           ///
@@ -114,11 +120,12 @@ contract ConfidentialCrossChainERC20 is Initializable {
 
     /// @notice Constructs the ConfidentialCrossChainERC20 contract.
     /// @param bridge_ Address of the bridge contract with mint/burn privileges.
-    constructor(address bridge_) {
+    /// @param authorizedMinter_ Address authorized to call faucetMint (relayer/deployer).
+    constructor(address bridge_, address authorizedMinter_) {
         require(bridge_ != address(0), ZeroAddress());
         _BRIDGE = bridge_;
-        // Note: _disableInitializers() removed to allow direct deployment
-        // For production, use a factory pattern with clones instead
+        _authorizedMinter = authorizedMinter_;
+        faucetEnabled = true; // Enabled by default on testnet
     }
 
     /// @notice Initializes the token.
@@ -374,12 +381,6 @@ contract ConfidentialCrossChainERC20 is Initializable {
         emit ConfidentialBurn(from, actualBurn);
     }
 
-    /// @notice Reveal a balance for bridge operations (returns plaintext).
-    /// @dev Only the bridge can call this to read amounts for cross-chain messaging.
-    function revealBalanceForBridge(address owner) external view onlyBridge returns (euint256) {
-        return _balances[owner];
-    }
-
     //////////////////////////////////////////////////////////////
     ///                   Deposit / Withdraw Functions          ///
     //////////////////////////////////////////////////////////////
@@ -410,7 +411,7 @@ contract ConfidentialCrossChainERC20 is Initializable {
         totalSupply = e.add(totalSupply, encrypted);
         e.allow(totalSupply, address(this));
 
-        emit Deposit(msg.sender, amount, encrypted);
+        emit Deposit(msg.sender, encrypted);
     }
 
     /// @notice Withdraw encrypted balance to plaintext ERC20 using attested decryption.
@@ -449,7 +450,7 @@ contract ConfidentialCrossChainERC20 is Initializable {
         // 6. Transfer underlying tokens to sender
         IERC20(_underlyingToken).transfer(msg.sender, amount);
 
-        emit Withdraw(msg.sender, amount);
+        emit Withdraw(msg.sender);
     }
 
     /// @notice Get the underlying ERC20 token address.
@@ -465,30 +466,41 @@ contract ConfidentialCrossChainERC20 is Initializable {
         _underlyingToken = token;
     }
 
-    /// @notice Initialize underlying token (callable by anyone if not set).
-    /// @dev For hackathon demo - allows token setup without bridge interaction.
-    function initUnderlyingTokenForDemo(address token) external {
-        require(_underlyingToken == address(0), "Already set");
-        require(token != address(0), ZeroAddress());
-        _underlyingToken = token;
+    /// @notice Set the authorized minter for cross-chain relayer operations (bridge only).
+    /// @param minter The address authorized to call faucetMint.
+    function setAuthorizedMinter(address minter) external onlyBridge {
+        require(minter != address(0), ZeroAddress());
+        _authorizedMinter = minter;
     }
 
-    /// @notice Set remote token (callable by anyone if not set).
-    /// @dev For hackathon demo - allows setting the Solana token mint address.
-    function setRemoteTokenForDemo(bytes32 remoteToken_) external {
+    /// @notice Enable or disable the testnet faucet (bridge only).
+    /// @dev Disable for mainnet deployment to restrict minting to bridge/authorized minter only.
+    function setFaucetEnabled(bool enabled) external onlyBridge {
+        faucetEnabled = enabled;
+    }
+
+    /// @notice Set the remote token (bridge only).
+    /// @dev Can only be set once.
+    function setRemoteToken(bytes32 remoteToken_) external onlyBridge {
         require(_remoteToken == bytes32(0), "Already set");
         require(remoteToken_ != bytes32(0), ZeroAddress());
         _remoteToken = remoteToken_;
     }
 
-    /// @notice Testnet faucet: mint tokens using encrypted amount (privacy-preserving).
-    /// @dev Accepts client-side encrypted amount via Inco zap.encrypt().
+
+
+    /// @notice Mint tokens using encrypted amount (privacy-preserving).
+    /// @dev When faucetEnabled: callable by anyone (testnet faucet mode).
+    ///      When disabled: only bridge or authorized minter (production mode).
     /// @param to Recipient address.
     /// @param encryptedAmount Client-side encrypted amount ciphertext.
     function faucetMint(
         address to,
         bytes calldata encryptedAmount
     ) external payable requiresFee {
+        if (!faucetEnabled) {
+            require(msg.sender == _BRIDGE || msg.sender == _authorizedMinter, SenderIsNotBridge());
+        }
         require(to != address(0), ZeroAddress());
 
         euint256 amount = encryptedAmount.newEuint256(msg.sender);

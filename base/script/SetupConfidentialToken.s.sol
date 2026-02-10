@@ -14,7 +14,7 @@ import {ConfidentialBridge} from "../src/ConfidentialBridge.sol";
 ///     --rpc-url base-sepolia --broadcast --verify
 contract SetupConfidentialToken is Script {
     // The ConfidentialBridge (with e.allow() for relayer-only decrypt)
-    address constant CONFIDENTIAL_BRIDGE = 0x85d2b2C0195990bf11250C8e109D97169b9eD2F6;
+    address constant CONFIDENTIAL_BRIDGE = 0x971B8434F64B0c8f3119aD2825f257F503abB48e;
     
     // Solana token mint for cDARK (in bytes32 format)
     // 3JWs353tgpFRVxb6Ubi85hDm5eBsbGrJFmVqNS8t6V3V in base58
@@ -36,7 +36,8 @@ contract SetupConfidentialToken is Script {
         // 1. Deploy cDARK token (ConfidentialCrossChainERC20)
         console2.log("1. Deploying cDARK token...");
         ConfidentialCrossChainERC20 cDark = new ConfidentialCrossChainERC20(
-            CONFIDENTIAL_BRIDGE
+            CONFIDENTIAL_BRIDGE,
+            deployer // authorized minter (relayer)
         );
         console2.log("   cDARK token:", address(cDark));
 

@@ -44,7 +44,8 @@ contract DeployConfidentialFull is Script {
         // 2. Deploy cDARK token (ConfidentialCrossChainERC20)
         console2.log("2. Deploying cDARK token...");
         ConfidentialCrossChainERC20 cDark = new ConfidentialCrossChainERC20(
-            address(confidentialBridge)
+            address(confidentialBridge),
+            deployer // authorized minter (relayer)
         );
         console2.log("   cDARK token:", address(cDark));
 

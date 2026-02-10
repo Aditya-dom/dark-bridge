@@ -143,7 +143,7 @@ contract ConfidentialBridgeE2EForkTest is Test {
         );
 
         // Deploy Confidential Token Implementation
-        confidentialToken = new ConfidentialCrossChainERC20(address(confidentialBridge));
+        confidentialToken = new ConfidentialCrossChainERC20(address(confidentialBridge), deployer);
 
         // Note: Skipping initialize since implementation has _disableInitializers()
         // For fork testing, we test the contract logic without full initialization

@@ -703,12 +703,14 @@ pub mod bridge {
     /// * `ctx` - The context containing vault and token accounts
     /// * `plaintext_amount` - The decrypted amount from attestation
     /// * `expected_handle` - The encrypted handle that was decrypted
+    /// * `attestation_signature` - Guardian's Ed25519 attestation signature
     pub fn withdraw_with_attestation<'info>(
         ctx: Context<'_, '_, '_, 'info, WithdrawWithAttestation<'info>>,
         plaintext_amount: u64,
         expected_handle: u128,
+        attestation_signature: [u8; 64],
     ) -> Result<()> {
-        confidential::withdraw_with_attestation(ctx, plaintext_amount, expected_handle)
+        confidential::withdraw_with_attestation(ctx, plaintext_amount, expected_handle, attestation_signature)
     }
 
     // ============================================================================

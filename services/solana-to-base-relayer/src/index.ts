@@ -26,8 +26,8 @@ import { Lightning, supportedChains } from "@inco/js";
 import type { WalletClient } from "viem";
 
 // Configuration
-const CONFIDENTIAL_BRIDGE_ADDRESS = "0x85d2b2C0195990bf11250C8e109D97169b9eD2F6" as Address;
-const CONFIDENTIAL_TOKEN_ADDRESS = "0x7e25DcFa8E53a29Ae2C2fAF18cdbCBDF2d898138" as Address;
+const CONFIDENTIAL_BRIDGE_ADDRESS = "0x971B8434F64B0c8f3119aD2825f257F503abB48e" as Address;
+const CONFIDENTIAL_TOKEN_ADDRESS = "0xbBbE1A6BaFa59dC40377E1a264AB21797EA51193" as Address;
 const BRIDGE_PROGRAM_ID = new PublicKey("EEMKRm1ANMBZHS6yEi67bKVuZDPhztQHVWBzoFnoVbh9");
 const SOLANA_RPC = "https://api.devnet.solana.com";
 

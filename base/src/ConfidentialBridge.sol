@@ -580,11 +580,13 @@ contract ConfidentialBridge is ReentrancyGuardTransient, OwnableRoles, Initializ
     /// @dev Caller must prove they own the encrypted address via Inco attested decrypt.
     /// @param claimId The ID of the private claim.
     /// @param decryptedRecipient The plaintext address from Inco attested decrypt.
-    /// @param attestationSignature The covalidator signature proving the decryption.
+    /// @param decryption The decryption attestation from Inco TEE.
+    /// @param signatures The covalidator signatures proving the decryption.
     function claimWithAttestation(
         uint256 claimId,
         address decryptedRecipient,
-        bytes calldata attestationSignature
+        DecryptionAttestation memory decryption,
+        bytes[] memory signatures
     ) external payable nonReentrant requiresFee {
         PrivateClaim storage claim = privateClaims[claimId];
         
@@ -593,10 +595,20 @@ contract ConfidentialBridge is ReentrancyGuardTransient, OwnableRoles, Initializ
         if (claim.claimed) revert ClaimAlreadyClaimed();
         if (block.timestamp > claim.expiry) revert ClaimExpired();
         
-        // Verify the decryption attestation from Inco TEE
-        // The attestation proves that encryptedRecipient decrypts to decryptedRecipient
-        // For hackathon: simplified verification - in production use full attestation check
-        require(attestationSignature.length > 0, InvalidAttestation());
+        // Verify the decryption attestation from Inco TEE using the real verifier
+        // This cryptographically proves that encryptedRecipient decrypts to decryptedRecipient
+        if (!inco.incoVerifier().isValidDecryptionAttestation(decryption, signatures)) {
+            revert InvalidAttestation();
+        }
+
+        // Verify the handle in the attestation matches the stored encrypted recipient
+        if (eaddress.unwrap(claim.encryptedRecipient) != decryption.handle) {
+            revert HandleMismatch();
+        }
+
+        // Verify the decrypted address matches the claimed recipient
+        address attestedRecipient = address(uint160(uint256(decryption.value)));
+        if (attestedRecipient != decryptedRecipient) revert RecipientMismatch();
         
         // Mark as claimed
         claim.claimed = true;
