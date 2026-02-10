@@ -61,8 +61,8 @@ if (!EVM_PRIVATE_KEY) {
 const evmAccount = privateKeyToAccount(EVM_PRIVATE_KEY as `0x${string}`);
 
 // Contract addresses
-const CONFIDENTIAL_BRIDGE_ADDRESS = "0x6f7c0515daF8459c0eBf35DB0411fC665fEf838a" as Address;
-const CONFIDENTIAL_TOKEN_ADDRESS = "0x06eb490068dFdc3b071A89381e06032B9E657906" as Address;
+const CONFIDENTIAL_BRIDGE_ADDRESS = "0x9A2672ea89d44b6fFDc018a1026650D008c8a923" as Address;
+const CONFIDENTIAL_TOKEN_ADDRESS = "0x9a30b4431e846FBc6da65bd58F326faeB2F724cb" as Address;
 
 // Solana Program IDs
 const BRIDGE_PROGRAM_ID = new PublicKey("EEMKRm1ANMBZHS6yEi67bKVuZDPhztQHVWBzoFnoVbh9");
@@ -328,32 +328,13 @@ async function processAuthorization(handle: string): Promise<boolean> {
     } catch (error: any) {
         console.error(`   ❌ Failed to process:`, error.message);
         
-        // If attestedDecryptWithSignature doesn't exist, we need a different approach
         if (error.message?.includes('attestedDecryptWithSignature')) {
-            console.log(`   💡 Inco SDK doesn't support pre-signed auth yet.`);
-            console.log(`   💡 Will use alternative approach...`);
-            return await processWithDemoFallback(handle, bridgeEvent);
+            console.error(`   ❌ Inco SDK doesn't support pre-signed auth yet.`);
+            console.error(`   Cannot relay without real amount.`);
         }
         
         return false;
     }
-}
-
-/**
- * Fallback: If Inco SDK doesn't support pre-signed auth,
- * use the handle to derive a deterministic demo amount
- */
-async function processWithDemoFallback(handle: string, bridgeEvent: BridgeEvent): Promise<boolean> {
-    console.log(`   🔄 Using demo fallback (until Inco supports pre-signed auth)...`);
-    
-    // Use a fixed demo amount
-    const DEMO_AMOUNT = BigInt(5_000_000_000_000_000_000); // 5 tokens
-    
-    console.log(`   📥 Re-encrypting demo amount for Solana TEE...`);
-    const solanaCiphertext = await encryptValue(DEMO_AMOUNT);
-    const ciphertextBytes = hexToBuffer(solanaCiphertext);
-
-    return await relayToSolana(bridgeEvent, new Uint8Array(ciphertextBytes));
 }
 
 /**
@@ -373,10 +354,14 @@ async function relayToSolana(bridgeEvent: BridgeEvent, encryptedAmountBytes: Uin
         const payer = await getSolanaCliConfigKeypairSigner();
 
         // Find PDAs
+        // Hash owner with keccak256 for privacy-preserving PDA (matches Rust program)
+        const { keccak256: keccak256Hash } = await import("viem");
+        const ownerHash = Buffer.from(keccak256Hash(new Uint8Array(recipientPubkey.toBuffer())).slice(2), "hex");
+
         const [vaultPda] = PublicKey.findProgramAddressSync(
             [
                 Buffer.from("confidential_vault"),
-                recipientPubkey.toBuffer(),
+                ownerHash,
                 tokenMint.toBuffer(),
             ],
             BRIDGE_PROGRAM_ID
@@ -421,12 +406,11 @@ async function relayToSolana(bridgeEvent: BridgeEvent, encryptedAmountBytes: Uin
         ]);
 
         const accounts = [
-            { pubkey: bridgeAuthority, isSigner: false, isWritable: false },
-            { pubkey: tokenMint, isSigner: false, isWritable: false },
-            { pubkey: recipientPubkey, isSigner: false, isWritable: false },
-            { pubkey: vaultPda, isSigner: true, isWritable: true }, // vault needs signer via PDA
-            { pubkey: INCO_LIGHTNING_ID, isSigner: false, isWritable: false },
-            { pubkey: bridgeState, isSigner: false, isWritable: false },
+            { pubkey: bridgeAuthority, isSigner: false, isWritable: true },    // bridge_authority (PDA signer)
+            { pubkey: bridgeState, isSigner: false, isWritable: false },        // bridge
+            { pubkey: recipientPubkey, isSigner: false, isWritable: false },    // owner (for Inco allow() grants)
+            { pubkey: vaultPda, isSigner: false, isWritable: true },            // vault
+            { pubkey: INCO_LIGHTNING_ID, isSigner: false, isWritable: false },  // inco_lightning_program
         ];
 
         // Note: This needs proper Anchor instruction building

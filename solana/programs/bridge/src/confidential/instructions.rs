@@ -8,15 +8,23 @@ use inco_lightning::cpi::{allow, e_add, e_ge, e_select, e_sub, new_euint128, as_
 use inco_lightning::types::{Ebool, Euint128};
 use inco_lightning::ID as INCO_LIGHTNING_ID;
 
+use anchor_lang::solana_program::keccak;
+
 use super::vault::{ConfidentialVault, ConfidentialClaim, IncoPrivateClaim};
 use crate::BridgeError;
+
+/// Compute keccak256 hash of an owner's pubkey for privacy-preserving vault derivation.
+/// This prevents explorers from linking vaults to wallet addresses.
+fn hash_owner(owner: &Pubkey) -> [u8; 32] {
+    keccak::hash(owner.as_ref()).0
+}
 
 /// Initialize a confidential vault for a user.
 pub fn initialize_confidential_vault<'info>(
     ctx: Context<'_, '_, 'info, 'info, InitializeConfidentialVault<'info>>,
 ) -> Result<()> {
     let vault = &mut ctx.accounts.vault;
-    vault.owner = ctx.accounts.owner.key();
+    vault.owner_hash = hash_owner(&ctx.accounts.owner.key());
     vault.token_mint = ctx.accounts.token_mint.key();
     vault.bridge_authority = ctx.accounts.bridge_authority.key();
     vault.bump = ctx.bumps.vault;
@@ -46,85 +54,6 @@ pub fn initialize_confidential_vault<'info>(
         );
         allow(cpi_ctx, vault.encrypted_balance.0, true, ctx.accounts.owner.key())?;
     }
-
-    Ok(())
-}
-
-/// Bridge tokens confidentially from Solana to Base (plaintext amount).
-/// 
-/// This burns encrypted tokens from the user's vault and emits a bridge message.
-/// The amount is provided as plaintext and trivially encrypted on-chain.
-/// 
-/// For cross-chain TEE: The plaintext amount is emitted in the event so the relayer
-/// can mint the exact amount on Base without needing to decrypt.
-pub fn bridge_confidential_out_plaintext<'info>(
-    ctx: Context<'_, '_, '_, 'info, BridgeConfidentialOut<'info>>,
-    plaintext_amount: u128,
-    destination_evm: [u8; 20],
-) -> Result<()> {
-    let vault = &mut ctx.accounts.vault;
-    let inco = ctx.accounts.inco_lightning_program.to_account_info();
-    let signer = ctx.accounts.owner.to_account_info();
-
-    // Create encrypted handle from plaintext amount (trivial encryption)
-    let cpi_ctx = CpiContext::new(inco.clone(), Operation { signer: signer.clone() });
-    let amount: Euint128 = as_euint128(cpi_ctx, plaintext_amount)?;
-
-    // Check if vault has sufficient balance
-    let cpi_ctx = CpiContext::new(inco.clone(), Operation { signer: signer.clone() });
-    let has_sufficient: Ebool = e_ge(cpi_ctx, vault.encrypted_balance, amount, 0)?;
-
-    // Create zero for failed case
-    let cpi_ctx = CpiContext::new(inco.clone(), Operation { signer: signer.clone() });
-    let zero = as_euint128(cpi_ctx, 0)?;
-
-    // Select actual amount to bridge (0 if insufficient)
-    let cpi_ctx = CpiContext::new(inco.clone(), Operation { signer: signer.clone() });
-    let actual_amount: Euint128 = e_select(cpi_ctx, has_sufficient, amount, zero, 0)?;
-
-    // Subtract from vault balance
-    let cpi_ctx = CpiContext::new(inco.clone(), Operation { signer: signer.clone() });
-    let new_balance: Euint128 = e_sub(cpi_ctx, vault.encrypted_balance, actual_amount, 0)?;
-    vault.encrypted_balance = new_balance;
-
-    // Grant allowance to owner for updated balance
-    if ctx.remaining_accounts.len() >= 2 {
-        let cpi_ctx = CpiContext::new(
-            inco.clone(),
-            Allow {
-                allowance_account: ctx.remaining_accounts[0].clone(),
-                signer: signer.clone(),
-                allowed_address: ctx.remaining_accounts[1].clone(),
-                system_program: ctx.accounts.system_program.to_account_info(),
-            },
-        );
-        allow(cpi_ctx, new_balance.0, true, vault.owner)?;
-
-        // Also allow for actual_amount (so user can decrypt via attested decrypt if needed)
-        // This enables verification and debugging even when using plaintext flow
-        if ctx.remaining_accounts.len() >= 4 {
-            let cpi_ctx = CpiContext::new(
-                inco.clone(),
-                Allow {
-                    allowance_account: ctx.remaining_accounts[2].clone(),
-                    signer: signer.clone(),
-                    allowed_address: ctx.remaining_accounts[3].clone(),
-                    system_program: ctx.accounts.system_program.to_account_info(),
-                },
-            );
-            allow(cpi_ctx, actual_amount.0, true, vault.owner)?;
-        }
-    }
-
-    // Emit bridge message event with PLAINTEXT amount for cross-chain relay
-    // This allows the relayer to mint the exact amount on Base without decryption
-    emit!(ConfidentialBridgeOutPlaintextEvent {
-        vault: vault.key(),
-        owner: vault.owner,
-        destination_evm,
-        encrypted_amount_handle: amount.0,
-        plaintext_amount, // Include plaintext for relayer
-    });
 
     Ok(())
 }
@@ -176,7 +105,7 @@ pub fn bridge_confidential_out<'info>(
                 system_program: ctx.accounts.system_program.to_account_info(),
             },
         );
-        allow(cpi_ctx, new_balance.0, true, vault.owner)?;
+        allow(cpi_ctx, new_balance.0, true, ctx.accounts.owner.key())?;
 
         // Also allow for actual_amount (so user can decrypt for cross-chain relay)
         // This is critical for attested decrypt to work
@@ -190,19 +119,18 @@ pub fn bridge_confidential_out<'info>(
                     system_program: ctx.accounts.system_program.to_account_info(),
                 },
             );
-            allow(cpi_ctx, actual_amount.0, true, vault.owner)?;
+            allow(cpi_ctx, actual_amount.0, true, ctx.accounts.owner.key())?;
         }
     }
 
     // Emit bridge message event
+    // PRIVACY: We emit owner_hash (not raw pubkey) so explorer can't link vault to user.
     // We emit the ORIGINAL amount handle (from NewEuint128) because:
     // 1. The covalidator has the ciphertext for this handle
     // 2. It can be decrypted via attested decrypt for cross-chain relay
-    // Note: actual_amount = e_select(has_sufficient, amount, zero)
-    // If has_sufficient is false, actual_amount is 0 (no tokens bridged)
     emit!(ConfidentialBridgeOutEvent {
         vault: vault.key(),
-        owner: vault.owner,
+        owner_hash: vault.owner_hash,
         destination_evm,
         encrypted_amount_handle: amount.0,  // Use original handle, not e_select result
     });
@@ -230,9 +158,9 @@ pub fn relay_bridge_confidential_out<'info>(
     let vault = &mut ctx.accounts.vault;
     let inco = ctx.accounts.inco_lightning_program.to_account_info();
     
-    // Verify the vault owner matches the claimed owner
+    // Verify the vault owner matches the claimed owner (compare hashes for privacy)
     require!(
-        vault.owner == vault_owner,
+        vault.owner_hash == hash_owner(&vault_owner),
         crate::BridgeError::Unauthorized
     );
     
@@ -272,7 +200,7 @@ pub fn relay_bridge_confidential_out<'info>(
                 system_program: ctx.accounts.system_program.to_account_info(),
             },
         );
-        allow(cpi_ctx, new_balance.0, true, vault.owner)?;
+        allow(cpi_ctx, new_balance.0, true, vault_owner)?;
     }
 
     // Emit PRIVATE bridge event - NO sender/owner address revealed
@@ -329,6 +257,13 @@ pub fn receive_confidential_in<'info>(
     let vault = &mut ctx.accounts.vault;
     let inco = ctx.accounts.inco_lightning_program.to_account_info();
     let signer = ctx.accounts.bridge_authority.to_account_info();
+    let owner_key = ctx.accounts.owner.key();
+
+    // Verify owner matches vault (hash check)
+    require!(
+        vault.owner_hash == hash_owner(&owner_key),
+        crate::BridgeError::Unauthorized
+    );
 
     // Create encrypted handle from ciphertext
     let cpi_ctx = CpiContext::new(inco.clone(), Operation { signer: signer.clone() });
@@ -350,13 +285,13 @@ pub fn receive_confidential_in<'info>(
                 system_program: ctx.accounts.system_program.to_account_info(),
             },
         );
-        allow(cpi_ctx, new_balance.0, true, vault.owner)?;
+        allow(cpi_ctx, new_balance.0, true, owner_key)?;
     }
 
-    // Emit receive event
+    // Emit receive event (owner_hash for privacy)
     emit!(ConfidentialBridgeInEvent {
         vault: vault.key(),
-        owner: vault.owner,
+        owner_hash: vault.owner_hash,
         base_sender,
         encrypted_amount_handle: amount.0,
     });
@@ -378,6 +313,13 @@ pub fn relay_receive_confidential<'info>(
 ) -> Result<()> {
     let vault = &mut ctx.accounts.vault;
     let inco = ctx.accounts.inco_lightning_program.to_account_info();
+    let owner_key = ctx.accounts.owner.key();
+    
+    // Verify owner matches vault (hash check)
+    require!(
+        vault.owner_hash == hash_owner(&owner_key),
+        crate::BridgeError::Unauthorized
+    );
     
     // Use relayer as the signer for Inco operations
     // The relayer is the authorized entity that can mint to vaults
@@ -403,13 +345,13 @@ pub fn relay_receive_confidential<'info>(
                 system_program: ctx.accounts.system_program.to_account_info(),
             },
         );
-        allow(cpi_ctx, new_balance.0, true, vault.owner)?;
+        allow(cpi_ctx, new_balance.0, true, owner_key)?;
     }
 
-    // Emit receive event
+    // Emit receive event (owner_hash for privacy)
     emit!(ConfidentialBridgeInEvent {
         vault: vault.key(),
-        owner: vault.owner,
+        owner_hash: vault.owner_hash,
         base_sender,
         encrypted_amount_handle: amount.0,
     });
@@ -459,13 +401,13 @@ pub fn deposit_to_confidential_vault<'info>(
                 system_program: ctx.accounts.system_program.to_account_info(),
             },
         );
-        allow(cpi_ctx, new_balance.0, true, vault.owner)?;
+        allow(cpi_ctx, new_balance.0, true, ctx.accounts.owner.key())?;
     }
 
-    // Emit deposit event
+    // Emit deposit event (owner_hash for privacy)
     emit!(DepositEvent {
         vault: vault.key(),
-        owner: vault.owner,
+        owner_hash: vault.owner_hash,
         plaintext_amount: amount,
         encrypted_balance_handle: new_balance.0,
     });
@@ -505,7 +447,7 @@ pub fn withdraw_with_attestation<'info>(
     // Use vault PDA to sign the transfer
     let vault_seeds = &[
         ConfidentialVault::SEED_PREFIX,
-        vault.owner.as_ref(),
+        vault.owner_hash.as_ref(),
         vault.token_mint.as_ref(),
         &[vault.bump],
     ];
@@ -522,10 +464,10 @@ pub fn withdraw_with_attestation<'info>(
     );
     token::transfer(cpi_ctx, plaintext_amount)?;
 
-    // Emit withdraw event
+    // Emit withdraw event (owner_hash for privacy)
     emit!(WithdrawEvent {
         vault: vault.key(),
-        owner: vault.owner,
+        owner_hash: vault.owner_hash,
         plaintext_amount,
     });
 
@@ -581,7 +523,7 @@ pub fn bridge_private_with_commitment<'info>(
                 system_program: ctx.accounts.system_program.to_account_info(),
             },
         );
-        allow(cpi_ctx, new_balance.0, true, vault.owner)?;
+        allow(cpi_ctx, new_balance.0, true, ctx.accounts.owner.key())?;
     }
 
     // Emit PRIVATE event - NO sender or receiver addresses revealed
@@ -681,7 +623,7 @@ pub fn redeem_confidential_claim<'info>(
                 system_program: ctx.accounts.system_program.to_account_info(),
             },
         );
-        allow(cpi_ctx, new_balance.0, true, vault.owner)?;
+        allow(cpi_ctx, new_balance.0, true, ctx.accounts.claimer.key())?;
     }
 
     // Emit claim redeemed - first time claimer identity is revealed
@@ -791,7 +733,7 @@ pub fn claim_with_attestation<'info>(
                 system_program: ctx.accounts.system_program.to_account_info(),
             },
         );
-        allow(cpi_ctx, new_balance.0, true, vault.owner)?;
+        allow(cpi_ctx, new_balance.0, true, ctx.accounts.claimer.key())?;
     }
 
     // Emit event - FIRST TIME recipient is revealed!
@@ -821,11 +763,12 @@ pub struct InitializeConfidentialVault<'info> {
     pub bridge_authority: AccountInfo<'info>,
 
     /// The confidential vault account.
+    /// PRIVACY: PDA derived from keccak256(owner) — explorer can't reverse to get owner pubkey.
     #[account(
         init,
         payer = owner,
         space = ConfidentialVault::SIZE,
-        seeds = [ConfidentialVault::SEED_PREFIX, owner.key().as_ref(), token_mint.key().as_ref()],
+        seeds = [ConfidentialVault::SEED_PREFIX, &anchor_lang::solana_program::keccak::hash(owner.key().as_ref()).0, token_mint.key().as_ref()],
         bump
     )]
     pub vault: Account<'info, ConfidentialVault>,
@@ -843,10 +786,11 @@ pub struct BridgeConfidentialOut<'info> {
     pub owner: Signer<'info>,
 
     /// The confidential vault to bridge from.
+    /// PRIVACY: Verified via keccak256(owner) == vault.owner_hash.
     #[account(
         mut,
-        has_one = owner,
-        seeds = [ConfidentialVault::SEED_PREFIX, owner.key().as_ref(), vault.token_mint.as_ref()],
+        constraint = vault.owner_hash == anchor_lang::solana_program::keccak::hash(owner.key().as_ref()).0 @ crate::BridgeError::Unauthorized,
+        seeds = [ConfidentialVault::SEED_PREFIX, vault.owner_hash.as_ref(), vault.token_mint.as_ref()],
         bump = vault.bump
     )]
     pub vault: Account<'info, ConfidentialVault>,
@@ -876,7 +820,7 @@ pub struct RelayBridgeConfidentialOut<'info> {
     /// Note: We don't require owner to be signer - relayer has verified off-chain.
     #[account(
         mut,
-        seeds = [ConfidentialVault::SEED_PREFIX, vault.owner.as_ref(), vault.token_mint.as_ref()],
+        seeds = [ConfidentialVault::SEED_PREFIX, vault.owner_hash.as_ref(), vault.token_mint.as_ref()],
         bump = vault.bump
     )]
     pub vault: Account<'info, ConfidentialVault>,
@@ -906,11 +850,15 @@ pub struct ReceiveConfidentialIn<'info> {
     #[account(mut)]
     pub bridge_authority: Signer<'info>,
 
+    /// The vault owner (needed for Inco allow() access grants).
+    /// CHECK: Verified against vault.owner_hash in the instruction handler.
+    pub owner: AccountInfo<'info>,
+
     /// The recipient vault.
     #[account(
         mut,
         has_one = bridge_authority,
-        seeds = [ConfidentialVault::SEED_PREFIX, vault.owner.as_ref(), vault.token_mint.as_ref()],
+        seeds = [ConfidentialVault::SEED_PREFIX, vault.owner_hash.as_ref(), vault.token_mint.as_ref()],
         bump = vault.bump
     )]
     pub vault: Account<'info, ConfidentialVault>,
@@ -944,11 +892,15 @@ pub struct RelayReceiveConfidential<'info> {
     )]
     pub bridge_authority: AccountInfo<'info>,
 
+    /// The vault owner (needed for Inco allow() access grants).
+    /// CHECK: Verified against vault.owner_hash in the instruction handler.
+    pub owner: AccountInfo<'info>,
+
     /// The recipient vault.
     #[account(
         mut,
         constraint = vault.bridge_authority == bridge_authority.key(),
-        seeds = [ConfidentialVault::SEED_PREFIX, vault.owner.as_ref(), vault.token_mint.as_ref()],
+        seeds = [ConfidentialVault::SEED_PREFIX, vault.owner_hash.as_ref(), vault.token_mint.as_ref()],
         bump = vault.bump
     )]
     pub vault: Account<'info, ConfidentialVault>,
@@ -968,8 +920,8 @@ pub struct DepositToConfidentialVault<'info> {
     /// The confidential vault to deposit to.
     #[account(
         mut,
-        has_one = owner,
-        seeds = [ConfidentialVault::SEED_PREFIX, owner.key().as_ref(), vault.token_mint.as_ref()],
+        constraint = vault.owner_hash == anchor_lang::solana_program::keccak::hash(owner.key().as_ref()).0 @ crate::BridgeError::Unauthorized,
+        seeds = [ConfidentialVault::SEED_PREFIX, vault.owner_hash.as_ref(), vault.token_mint.as_ref()],
         bump = vault.bump
     )]
     pub vault: Account<'info, ConfidentialVault>,
@@ -1005,8 +957,8 @@ pub struct WithdrawWithAttestation<'info> {
     /// The confidential vault to withdraw from.
     #[account(
         mut,
-        has_one = owner,
-        seeds = [ConfidentialVault::SEED_PREFIX, owner.key().as_ref(), vault.token_mint.as_ref()],
+        constraint = vault.owner_hash == anchor_lang::solana_program::keccak::hash(owner.key().as_ref()).0 @ crate::BridgeError::Unauthorized,
+        seeds = [ConfidentialVault::SEED_PREFIX, vault.owner_hash.as_ref(), vault.token_mint.as_ref()],
         bump = vault.bump
     )]
     pub vault: Account<'info, ConfidentialVault>,
@@ -1046,8 +998,8 @@ pub struct BridgePrivateWithCommitment<'info> {
     /// The confidential vault to bridge from.
     #[account(
         mut,
-        has_one = owner,
-        seeds = [ConfidentialVault::SEED_PREFIX, owner.key().as_ref(), vault.token_mint.as_ref()],
+        constraint = vault.owner_hash == anchor_lang::solana_program::keccak::hash(owner.key().as_ref()).0 @ crate::BridgeError::Unauthorized,
+        seeds = [ConfidentialVault::SEED_PREFIX, vault.owner_hash.as_ref(), vault.token_mint.as_ref()],
         bump = vault.bump
     )]
     pub vault: Account<'info, ConfidentialVault>,
@@ -1118,16 +1070,12 @@ pub struct RedeemConfidentialClaim<'info> {
     /// The claimer's vault to receive the tokens.
     #[account(
         mut,
-        has_one = owner @ crate::BridgeError::Unauthorized,
+        constraint = vault.owner_hash == anchor_lang::solana_program::keccak::hash(claimer.key().as_ref()).0 @ crate::BridgeError::Unauthorized,
         constraint = vault.token_mint == claim.token_mint @ crate::BridgeError::TokenMismatch,
-        seeds = [ConfidentialVault::SEED_PREFIX, claimer.key().as_ref(), claim.token_mint.as_ref()],
+        seeds = [ConfidentialVault::SEED_PREFIX, vault.owner_hash.as_ref(), claim.token_mint.as_ref()],
         bump = vault.bump
     )]
     pub vault: Account<'info, ConfidentialVault>,
-
-    /// The vault owner (should be claimer).
-    /// CHECK: Verified by vault constraint.
-    pub owner: AccountInfo<'info>,
 
     /// CHECK: Inco Lightning program.
     #[account(address = INCO_LIGHTNING_ID)]
@@ -1188,16 +1136,12 @@ pub struct ClaimWithAttestation<'info> {
     /// The claimer's vault to receive the tokens.
     #[account(
         mut,
-        has_one = owner @ crate::BridgeError::Unauthorized,
+        constraint = vault.owner_hash == anchor_lang::solana_program::keccak::hash(claimer.key().as_ref()).0 @ crate::BridgeError::Unauthorized,
         constraint = vault.token_mint == claim.token_mint @ crate::BridgeError::TokenMismatch,
-        seeds = [ConfidentialVault::SEED_PREFIX, claimer.key().as_ref(), claim.token_mint.as_ref()],
+        seeds = [ConfidentialVault::SEED_PREFIX, vault.owner_hash.as_ref(), claim.token_mint.as_ref()],
         bump = vault.bump
     )]
     pub vault: Account<'info, ConfidentialVault>,
-
-    /// The vault owner (should be claimer).
-    /// CHECK: Verified by vault constraint.
-    pub owner: AccountInfo<'info>,
 
     /// CHECK: Inco Lightning program.
     #[account(address = INCO_LIGHTNING_ID)]
@@ -1213,26 +1157,15 @@ pub struct ClaimWithAttestation<'info> {
 #[event]
 pub struct ConfidentialBridgeOutEvent {
     pub vault: Pubkey,
-    pub owner: Pubkey,
+    pub owner_hash: [u8; 32],
     pub destination_evm: [u8; 20],
     pub encrypted_amount_handle: u128,
-}
-
-/// Event emitted when bridging with plaintext amount (for cross-chain TEE).
-/// Includes the plaintext amount so the relayer can mint exact amount on Base.
-#[event]
-pub struct ConfidentialBridgeOutPlaintextEvent {
-    pub vault: Pubkey,
-    pub owner: Pubkey,
-    pub destination_evm: [u8; 20],
-    pub encrypted_amount_handle: u128,
-    pub plaintext_amount: u128,
 }
 
 #[event]
 pub struct ConfidentialBridgeInEvent {
     pub vault: Pubkey,
-    pub owner: Pubkey,
+    pub owner_hash: [u8; 32],
     pub base_sender: [u8; 20],
     pub encrypted_amount_handle: u128,
 }
@@ -1249,7 +1182,7 @@ pub struct RelayedPrivateBridgeOutEvent {
 #[event]
 pub struct DepositEvent {
     pub vault: Pubkey,
-    pub owner: Pubkey,
+    pub owner_hash: [u8; 32],
     pub plaintext_amount: u64,
     pub encrypted_balance_handle: u128,
 }
@@ -1257,7 +1190,7 @@ pub struct DepositEvent {
 #[event]
 pub struct WithdrawEvent {
     pub vault: Pubkey,
-    pub owner: Pubkey,
+    pub owner_hash: [u8; 32],
     pub plaintext_amount: u64,
 }
 

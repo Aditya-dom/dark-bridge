@@ -8,6 +8,7 @@ import {
 } from "@solana/web3.js";
 import { BRIDGE_PROGRAM_ID, SOLANA_RPC_URL, SOLANA_CDARK_TOKEN_MINT, INCO_LIGHTNING_PROGRAM_ID } from "./constants";
 import crypto from "crypto";
+import { keccak256 } from "viem";
 
 // Inco Lightning Program ID on Solana Devnet
 const INCO_LIGHTNING_ID = new PublicKey(INCO_LIGHTNING_PROGRAM_ID);
@@ -31,11 +32,20 @@ export function getConnection(): Connection {
 /**
  * Derive the vault PDA for a user and token mint
  */
+/**
+ * Hash owner pubkey with keccak256 for privacy-preserving PDA derivation.
+ * Matches Rust: anchor_lang::solana_program::keccak::hash(owner.as_ref())
+ */
+export function hashOwner(owner: PublicKey): Buffer {
+    const hashHex = keccak256(new Uint8Array(owner.toBuffer()));
+    return Buffer.from(hashHex.slice(2), "hex");
+}
+
 export function deriveVaultPda(owner: PublicKey, tokenMint: PublicKey): [PublicKey, number] {
     return PublicKey.findProgramAddressSync(
         [
             Buffer.from(VAULT_SEED_PREFIX),
-            owner.toBuffer(),
+            hashOwner(owner),
             tokenMint.toBuffer(),
         ],
         new PublicKey(BRIDGE_PROGRAM_ID)
@@ -152,8 +162,8 @@ export async function initializeVault(
  */
 export function getDefaultTokenMint(): PublicKey {
     // This is the remoteToken from the EVM contract:
-    // 0x1cd8d28fb7697151a7202ba6f1aee1df7b201b5bce634fe0d48e0aadc8435fde
-    // Converted to base58: 2wcB7tJ56xTa68zMstHhMBYymeCaBvG3Vp2xW9JMVNrH
+    // 0x223403719246903aaf8dc5029034932739e7641a28e51c89c199ab62e27d5598
+    // Converted to base58: 3JWs353tgpFRVxb6Ubi85hDm5eBsbGrJFmVqNS8t6V3V
     return new PublicKey(SOLANA_CDARK_TOKEN_MINT);
 }
 
@@ -199,13 +209,13 @@ export async function getVaultBalance(
         return null;
     }
 
-    // Vault structure: discriminator (8) + owner (32) + token_mint (32) + bridge_authority (32) + encrypted_balance (16) + bump (1)
+    // Vault structure: discriminator (8) + owner_hash (32) + token_mint (32) + encrypted_balance (16) + bridge_authority (32) + bump (1)
     const vaultData = accountInfo.data;
-    if (vaultData.length < 8 + 32 + 32 + 32 + 16) {
+    if (vaultData.length < 8 + 32 + 32 + 16) {
         return null;
     }
 
-    const encryptedBalance = vaultData.subarray(8 + 32 + 32 + 32, 8 + 32 + 32 + 32 + 16);
+    const encryptedBalance = vaultData.subarray(8 + 32 + 32, 8 + 32 + 32 + 16);
     return readU128LE(encryptedBalance);
 }
 
@@ -230,9 +240,10 @@ function deriveIncoAllowancePda(owner: PublicKey, index: number): PublicKey {
 }
 
 /**
- * Build the bridge_confidential_out_plaintext instruction for Solana → Base transfer.
+ * Build the bridge_confidential_out instruction for Solana → Base transfer.
+ * Uses client-side encrypted ciphertext (via @inco/solana-sdk) for real privacy.
  *
- * IMPORTANT: This function now includes 4 remaining accounts for Inco ACL grants:
+ * IMPORTANT: This function includes 4 remaining accounts for Inco ACL grants:
  * - remaining_accounts[0]: Allowance PDA for new_balance handle
  * - remaining_accounts[1]: Owner pubkey (allowed to decrypt new_balance)
  * - remaining_accounts[2]: Allowance PDA for actual_amount handle
@@ -245,12 +256,12 @@ export function buildBridgeConfidentialOutInstruction(
     owner: PublicKey,
     tokenMint: PublicKey,
     destinationEvmAddress: string,
-    amount: bigint
+    encryptedAmountBytes: Buffer
 ): TransactionInstruction {
     const [vaultPda] = deriveVaultPda(owner, tokenMint);
 
-    // Anchor discriminator for "bridge_confidential_out_plaintext"
-    const discriminator = computeDiscriminator("bridge_confidential_out_plaintext");
+    // Anchor discriminator for "bridge_confidential_out"
+    const discriminator = computeDiscriminator("bridge_confidential_out");
 
     // Convert EVM address to bytes (remove 0x prefix)
     const evmAddressClean = destinationEvmAddress.startsWith("0x")
@@ -258,27 +269,17 @@ export function buildBridgeConfidentialOutInstruction(
         : destinationEvmAddress;
     const destinationBytes = Buffer.from(evmAddressClean, "hex");
 
-    // Instruction data: discriminator + plaintext_amount (u128, 16 bytes LE) + destination_evm ([u8; 20])
-    const amountBuffer = Buffer.alloc(16);
-    // Write u128 as little-endian
-    let remaining = amount;
-    for (let i = 0; i < 16; i++) {
-        amountBuffer[i] = Number(remaining & BigInt(0xff));
-        remaining >>= BigInt(8);
-    }
+    // Instruction data: discriminator + borsh Vec<u8> (4-byte LE length + bytes) + destination_evm ([u8; 20])
+    const lenBuffer = Buffer.alloc(4);
+    lenBuffer.writeUInt32LE(encryptedAmountBytes.length, 0);
 
     const instructionData = Buffer.concat([
         discriminator,
-        amountBuffer,
+        lenBuffer,
+        encryptedAmountBytes,
         destinationBytes,
     ]);
 
-    // For plaintext version, we DON'T need allowance accounts because:
-    // 1. The plaintext amount is emitted in the event
-    // 2. The relayer reads it directly - no decryption needed
-    // 3. Only new_balance needs allow() for user to check their balance
-
-    // Base accounts only - simpler and works!
     return new TransactionInstruction({
         programId: new PublicKey(BRIDGE_PROGRAM_ID),
         keys: [
@@ -315,12 +316,19 @@ export async function bridgeConfidentialOut(
         throw new Error("Vault has no balance. Bridge tokens TO Solana first.");
     }
 
-    // Build instruction
+    // Encrypt amount client-side using Inco Solana SDK
+    const { encryptValue } = await import("@inco/solana-sdk/encryption");
+    const encryptedHex = await encryptValue(amount);
+    // Convert hex string to Buffer
+    const hexClean = encryptedHex.startsWith("0x") ? encryptedHex.slice(2) : encryptedHex;
+    const encryptedAmountBytes = Buffer.from(hexClean, "hex");
+
+    // Build instruction with encrypted ciphertext
     const instruction = buildBridgeConfidentialOutInstruction(
         owner,
         tokenMint,
         destinationEvmAddress,
-        amount
+        encryptedAmountBytes
     );
 
     // Create transaction

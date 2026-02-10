@@ -12,16 +12,10 @@
  * 
  * e.allow(amount, relayer) grants on-chain computation access, NOT off-chain decryption.
  * 
- * CURRENT APPROACH (Demo Mode):
- * - Parse the bridge event to get the EVM handle
- * - Use a placeholder amount (the handle hash mapped to a demo value)
- * - This preserves the privacy of the actual amount in the demo
- * 
- * PRODUCTION APPROACH (TODO):
- * 1. Frontend asks user to pre-sign a decrypt authorization before bridging
- * 2. Authorization is included in bridge transaction or stored off-chain
- * 3. Relayer uses pre-signed authorization to call attestedDecrypt
- * 4. Relayer re-encrypts plaintext for Solana TEE
+ * APPROACH:
+ * 1. Parse the encrypted bridge event to get the EVM handle
+ * 2. Use attestedDecrypt (relayer has e.allow() access) to get the plaintext off-chain
+ * 3. Re-encrypt plaintext for Solana TEE using encryptValue
  * 
  * Usage:
  *   EVM_PRIVATE_KEY=0x... bun run src/privacy-relayer-base-to-sol.ts --monitor
@@ -31,10 +25,7 @@
 // IMPORTANT: Bypass TLS certificate verification for Inco KMS in development
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
 
-// Demo mode: Set to false now that we have plaintext in the event
-// The new bridgePrivateToSolanaPlaintext function emits plaintext amount directly
-const USE_DEMO_MODE = false;
-const DEMO_BRIDGE_AMOUNT = BigInt(5_000_000_000_000_000_000); // 5 tokens with 18 decimals
+// The relayer uses attestedDecrypt (granted via e.allow in the contract) to learn amounts off-chain.
 
 import {
     createSolanaRpc,
@@ -100,9 +91,9 @@ async function getZap() {
     return zapInstance;
 }
 
-// NEW DEPLOYED ADDRESSES (with bridgePrivateToSolanaPlaintext - production ready)
-const CONFIDENTIAL_BRIDGE_ADDRESS = "0xD705858A979a4ab42e7a2e43e8CcC726Dbd87369" as Address;
-const CONFIDENTIAL_TOKEN_ADDRESS = "0xFBAD5A940d89e504C5f8C9e0fC3A976A82334565" as Address;
+// Deployed contract addresses
+const CONFIDENTIAL_BRIDGE_ADDRESS = "0x9A2672ea89d44b6fFDc018a1026650D008c8a923" as Address;
+const CONFIDENTIAL_TOKEN_ADDRESS = "0x9a30b4431e846FBc6da65bd58F326faeB2F724cb" as Address;
 
 // Bridge Program ID
 const BRIDGE_PROGRAM_ID = new PublicKey("EEMKRm1ANMBZHS6yEi67bKVuZDPhztQHVWBzoFnoVbh9");
@@ -119,10 +110,9 @@ const basePublicClient = createPublicClient({
 // --- ABIs ---
 const CONFIDENTIAL_BRIDGE_ABI = parseAbi([
     "event ConfidentialBridgeInitiated(uint256 indexed nonce, address indexed localToken, bytes32 indexed remoteToken, bytes32 toSolana, bytes32 encryptedAmount)",
-    "event ConfidentialBridgeInitiatedWithPlaintext(uint256 indexed nonce, address indexed localToken, bytes32 indexed remoteToken, bytes32 toSolana, uint256 plaintextAmount)",
 ]);
 
-// Full ABI for decoding (includes both old and new events)
+// Full ABI for decoding
 const CONFIDENTIAL_BRIDGE_FULL_ABI = [
     {
         type: "event",
@@ -133,17 +123,6 @@ const CONFIDENTIAL_BRIDGE_FULL_ABI = [
             { name: "remoteToken", type: "bytes32", indexed: true },
             { name: "toSolana", type: "bytes32", indexed: false },
             { name: "encryptedAmount", type: "bytes32", indexed: false },
-        ],
-    },
-    {
-        type: "event",
-        name: "ConfidentialBridgeInitiatedWithPlaintext",
-        inputs: [
-            { name: "nonce", type: "uint256", indexed: true },
-            { name: "localToken", type: "address", indexed: true },
-            { name: "remoteToken", type: "bytes32", indexed: true },
-            { name: "toSolana", type: "bytes32", indexed: false },
-            { name: "plaintextAmount", type: "uint256", indexed: false },
         ],
     },
 ] as const;
@@ -253,51 +232,8 @@ interface ConfidentialBridgeInitiatedEvent {
     encryptedAmount: Hex;
 }
 
-// NEW: Event with plaintext amount (no decryption needed)
-interface ConfidentialBridgeInitiatedWithPlaintextEvent {
-    nonce: bigint;
-    localToken: Address;
-    remoteToken: Hex;
-    toSolana: Hex;
-    plaintextAmount: bigint;
-}
-
 /**
- * Parse ConfidentialBridgeInitiatedWithPlaintext event from transaction receipt.
- * This is the new production event that includes plaintext amount directly.
- */
-function parseConfidentialBridgeWithPlaintextEvent(
-    logs: readonly { address: Address; data: Hex; topics: readonly Hex[] }[]
-): ConfidentialBridgeInitiatedWithPlaintextEvent | null {
-    for (const log of logs) {
-        if (log.address.toLowerCase() === CONFIDENTIAL_BRIDGE_ADDRESS.toLowerCase()) {
-            try {
-                const decoded = decodeEventLog({
-                    abi: CONFIDENTIAL_BRIDGE_FULL_ABI,
-                    data: log.data,
-                    topics: [...log.topics] as [`0x${string}`, ...`0x${string}`[]],
-                });
-
-                if (decoded.eventName === "ConfidentialBridgeInitiatedWithPlaintext") {
-                    const args = decoded.args as any;
-                    return {
-                        nonce: args.nonce,
-                        localToken: args.localToken,
-                        remoteToken: args.remoteToken,
-                        toSolana: args.toSolana,
-                        plaintextAmount: args.plaintextAmount,
-                    };
-                }
-            } catch (e) {
-                // Not our event
-            }
-        }
-    }
-    return null;
-}
-
-/**
- * Parse ConfidentialBridgeInitiated event from transaction receipt (legacy).
+ * Parse ConfidentialBridgeInitiated event from transaction receipt.
  */
 function parseConfidentialBridgeInitiatedEvent(
     logs: readonly { address: Address; data: Hex; topics: readonly Hex[] }[]
@@ -366,14 +302,18 @@ async function sendRelayConfidentialReceive(
 
     // Get the remote token from contract or use known deployment
     // Use the token mint that matches the user's initialized vault
-    const SOLANA_TOKEN_MINT = new PublicKey("2wcB7tJ56xTa68zMstHhMBYymeCaBvG3Vp2xW9JMVNrH");
+    const SOLANA_TOKEN_MINT = new PublicKey("3JWs353tgpFRVxb6Ubi85hDm5eBsbGrJFmVqNS8t6V3V");
     const tokenMint = SOLANA_TOKEN_MINT;
     console.log(`   Token Mint: ${tokenMint.toBase58()}`);
+
+    // Hash owner with keccak256 for privacy-preserving PDA (matches Rust program)
+    const { keccak256 } = await import("viem");
+    const ownerHash = Buffer.from(keccak256(new Uint8Array(recipientPubkey.toBuffer())).slice(2), "hex");
 
     const [vaultPda, vaultBump] = PublicKey.findProgramAddressSync(
         [
             Buffer.from("confidential_vault"),
-            recipientPubkey.toBuffer(),
+            ownerHash,
             tokenMint.toBuffer(),
         ],
         BRIDGE_PROGRAM_ID
@@ -453,6 +393,7 @@ async function sendRelayConfidentialReceive(
             { pubkey: payerKeypair.publicKey, isSigner: true, isWritable: true },  // relayer
             { pubkey: bridgeState, isSigner: false, isWritable: false },            // bridge
             { pubkey: bridgeAuthority, isSigner: false, isWritable: true },         // bridge_authority
+            { pubkey: recipientPubkey, isSigner: false, isWritable: false },        // owner (for Inco allow() grants)
             { pubkey: vaultPda, isSigner: false, isWritable: true },                // vault
             { pubkey: INCO_LIGHTNING_ID, isSigner: false, isWritable: false },      // inco_lightning_program
             { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }, // system_program
@@ -498,13 +439,13 @@ async function sendRelayConfidentialReceive(
 /**
  * Cross-chain re-encrypt: decrypt EVM handle → re-encrypt for Solana TEE.
  * 
- * FLOW (using e.reveal + attestedReveal):
- * 1. Contract calls e.reveal(handle) to mark for public decryption
- * 2. Relayer uses attestedReveal() - NO user signature needed
+ * FLOW (using e.allow + attestedDecrypt):
+ * 1. Contract calls e.allow(handle, bridgeRelayer) to grant relayer decrypt access
+ * 2. Relayer uses attestedDecrypt(walletClient, [handle]) with its own wallet signature
  * 3. Re-encrypt plaintext for Solana TEE using encryptValue
  * 
- * NOTE: attestedDecrypt requires USER's wallet signature (not relayer's).
- *       attestedReveal works for handles marked with e.reveal() - no signature needed.
+ * attestedDecrypt requires the caller's wallet signature. The relayer is authorized
+ * via e.allow() in the contract, so it can decrypt using its own wallet.
  * 
  * @param evmHandle - The encrypted handle (bytes32) from EVM
  * @returns Ciphertext bytes encrypted for Solana TEE
@@ -526,10 +467,10 @@ async function crossChainReencrypt(evmHandle: Hex): Promise<Uint8Array> {
     const typeIndicator = handleBytes[handleBytes.length - 1];
     console.log(`      Handle type indicator: ${typeIndicator} (0 = euint256, 8 = euint128, etc)`);
 
-    // Step 2: Attested REVEAL on EVM TEE (for handles marked with e.reveal())
-    // This does NOT require user's wallet signature - works for public reveals
-    console.log(`      📤 Requesting attested REVEAL from EVM TEE...`);
-    console.log(`      ℹ️ Using attestedReveal (no signature needed for e.reveal() handles)`);
+    // Step 2: Attested DECRYPT using relayer's wallet (authorized via e.allow())
+    console.log(`      📤 Requesting attested DECRYPT from EVM TEE...`);
+    console.log(`      ℹ️ Using attestedDecrypt (relayer authorized via e.allow() in contract)`);
+    console.log(`      ℹ️ Relayer address: ${evmAccount.address}`);
 
     // Configure retries for async handle processing
     // Inco team recommends: 1-2 second base backoff for TEE sync delays
@@ -540,38 +481,38 @@ async function crossChainReencrypt(evmHandle: Hex): Promise<Uint8Array> {
     };
 
     try {
-        // Use attestedReveal instead of attestedDecrypt
-        // attestedReveal is for handles that have been marked with e.reveal()
-        console.log(`      ⏳ Calling attestedReveal...`);
+        // Use attestedDecrypt with relayer's wallet client
+        // The relayer is granted access via e.allow(amount, bridgeRelayer) in ConfidentialBridge
+        console.log(`      ⏳ Calling attestedDecrypt...`);
         console.log(`      Handle (hex): ${evmHandle}`);
         console.log(`      Handle length: ${evmHandle.length} chars`);
 
         // Add timeout wrapper (90s max for retries)
         const timeoutPromise = new Promise<never>((_, reject) => {
-            setTimeout(() => reject(new Error('attestedReveal timed out after 90s')), 90000);
+            setTimeout(() => reject(new Error('attestedDecrypt timed out after 90s')), 90000);
         });
 
-        const revealResults = await Promise.race([
-            zap.attestedReveal([evmHandle], backoffConfig),
+        const decryptResults = await Promise.race([
+            zap.attestedDecrypt(evmWalletClient, [evmHandle], backoffConfig),
             timeoutPromise
         ]);
 
-        console.log(`      Raw reveal results:`, JSON.stringify(revealResults, (_, v) =>
+        console.log(`      Raw decrypt results:`, JSON.stringify(decryptResults, (_, v) =>
             typeof v === 'bigint' ? v.toString() : v, 2));
 
-        if (!revealResults || revealResults.length === 0) {
-            throw new Error(`No results from attestedReveal for handle: ${evmHandle}`);
+        if (!decryptResults || decryptResults.length === 0) {
+            throw new Error(`No results from attestedDecrypt for handle: ${evmHandle}`);
         }
 
-        // The result structure for attestedReveal is { plaintext: value }
+        // The result structure for attestedDecrypt is { plaintext: { value: bigint } }
         let plaintext: bigint;
-        const result = revealResults[0];
+        const result = decryptResults[0];
 
         if (typeof result === 'bigint') {
             plaintext = result;
         } else if (result && typeof result === 'object') {
             if ('plaintext' in result && result.plaintext !== undefined) {
-                // plaintext could be { value: bigint } or just bigint
+                // plaintext is { value: bigint }
                 const pt = result.plaintext as any;
                 plaintext = BigInt(pt.value !== undefined ? pt.value : pt);
             } else if ('value' in result) {
@@ -583,7 +524,7 @@ async function crossChainReencrypt(evmHandle: Hex): Promise<Uint8Array> {
             plaintext = BigInt(result);
         }
 
-        console.log(`      ✅ Revealed plaintext: ${plaintext} (${Number(plaintext) / 1e18} tokens)`);
+        console.log(`      ✅ Decrypted plaintext: ${plaintext} (${Number(plaintext) / 1e18} tokens)`);
 
         // Step 3: Re-encrypt for Solana TEE
         console.log(`      📥 Re-encrypting for Solana TEE...`);
@@ -594,28 +535,29 @@ async function crossChainReencrypt(evmHandle: Hex): Promise<Uint8Array> {
         console.log(`      ✅ Ciphertext length: ${ciphertextBytes.length} bytes`);
 
         return new Uint8Array(ciphertextBytes);
-    } catch (revealError: any) {
-        console.error(`      ❌ Attested reveal failed:`, revealError.message);
-        console.error(`      Full error:`, revealError);
-        console.error(`      Cause:`, JSON.stringify(revealError.cause || {}, null, 2));
+    } catch (decryptError: any) {
+        console.error(`      ❌ Attested decrypt failed:`, decryptError.message);
+        console.error(`      Full error:`, decryptError);
+        console.error(`      Cause:`, JSON.stringify(decryptError.cause || {}, null, 2));
 
-        // Check if handle was not marked with e.reveal()
-        if (revealError.message?.includes('not revealed') || revealError.message?.includes('permission')) {
-            console.error(`      💡 Handle may not be marked with e.reveal() in the contract`);
-            console.error(`      💡 Ensure ConfidentialBridge calls e.reveal(amount) before emitting event`);
+        // Check if relayer is not authorized (e.allow() not called or wrong relayer address)
+        if (decryptError.message?.includes('not allowed') || decryptError.message?.includes('permission') || decryptError.message?.includes('unauthorized')) {
+            console.error(`      💡 Relayer may not be authorized to decrypt this handle`);
+            console.error(`      💡 Ensure ConfidentialBridge calls e.allow(amount, bridgeRelayer)`);
+            console.error(`      💡 And that bridgeRelayer matches: ${evmAccount.address}`);
         }
 
         // Check if it's a certificate issue
-        if (revealError.message?.includes('certificate') || revealError.message?.includes('CERT')) {
+        if (decryptError.message?.includes('certificate') || decryptError.message?.includes('CERT')) {
             console.error(`      💡 TLS certificate issue. NODE_TLS_REJECT_UNAUTHORIZED should be set to '0'`);
         }
 
         // Check if handle not found (may need time to be processed)
-        if (revealError.message?.includes('not found') || revealError.message?.includes('pending')) {
+        if (decryptError.message?.includes('not found') || decryptError.message?.includes('pending')) {
             console.error(`      💡 Handle may still be processing. Wait and retry.`);
         }
 
-        throw new Error(`Failed to reveal handle: ${revealError.message}`);
+        throw new Error(`Failed to decrypt handle: ${decryptError.message}`);
     }
 }
 
@@ -632,82 +574,32 @@ async function relayConfidentialToSolana(txHash: string): Promise<boolean> {
         });
         console.log(`   Block: ${receipt.blockNumber}`);
 
-        // 2. FIRST try to parse the new plaintext event (production flow)
-        const plaintextEvent = parseConfidentialBridgeWithPlaintextEvent(receipt.logs);
+        // 2. Parse the encrypted event
+        const bridgeEvent = parseConfidentialBridgeInitiatedEvent(receipt.logs);
 
-        if (plaintextEvent) {
-            console.log(`   ✅ Found ConfidentialBridgeInitiatedWithPlaintext event (production flow):`);
-            console.log(`      Nonce: ${plaintextEvent.nonce}`);
-            console.log(`      Local Token: ${plaintextEvent.localToken}`);
-            console.log(`      To Solana: ${plaintextEvent.toSolana}`);
-            console.log(`      Plaintext Amount: ${plaintextEvent.plaintextAmount} (${Number(plaintextEvent.plaintextAmount) / 1e18} tokens)`);
-
-            const recipientPubkey = bytes32ToPublicKey(plaintextEvent.toSolana);
-            console.log(`   Recipient: ${recipientPubkey.toBase58()}`);
-
-            // Re-encrypt plaintext for Solana TEE - no decryption needed!
-            console.log(`   📥 Encrypting plaintext for Solana TEE...`);
-            const solanaCiphertext = await encryptValue(plaintextEvent.plaintextAmount);
-            const encryptedAmountBytes = new Uint8Array(hexToBuffer(solanaCiphertext));
-            console.log(`      ✅ Solana ciphertext: ${solanaCiphertext.slice(0, 40)}...`);
-            console.log(`      ✅ Ciphertext length: ${encryptedAmountBytes.length} bytes`);
-
-            // Build and send Solana transaction - pass txHash to store mapping
-            const baseSender = toBytes(evmAccount.address).slice(0, 20);
-            const solSig = await sendRelayConfidentialReceive(
-                recipientPubkey,
-                encryptedAmountBytes,
-                baseSender,
-                txHash  // Pass Base TX hash to store mapping
-            );
-            return solSig !== null;
-        }
-
-        // 3. Fall back to legacy event (encrypted amount - requires attestedReveal)
-        const legacyEvent = parseConfidentialBridgeInitiatedEvent(receipt.logs);
-
-        if (!legacyEvent) {
+        if (!bridgeEvent) {
             console.log("   No ConfidentialBridgeInitiated event found");
             return false;
         }
 
-        console.log(`   ⚠️ Found legacy ConfidentialBridgeInitiated event (requires attestedReveal):`);
-        console.log(`      Nonce: ${legacyEvent.nonce}`);
-        console.log(`      Local Token: ${legacyEvent.localToken}`);
-        console.log(`      To Solana: ${legacyEvent.toSolana}`);
-        console.log(`      EVM Handle: ${legacyEvent.encryptedAmount}`);
+        console.log(`   ✅ Found ConfidentialBridgeInitiated event:`);
+        console.log(`      Nonce: ${bridgeEvent.nonce}`);
+        console.log(`      Local Token: ${bridgeEvent.localToken}`);
+        console.log(`      To Solana: ${bridgeEvent.toSolana}`);
+        console.log(`      EVM Handle: ${bridgeEvent.encryptedAmount}`);
 
-        // 4. Cross-chain re-encryption: decrypt EVM handle → re-encrypt for Solana TEE
-        // Relayer has e.allow() access granted by ConfidentialBridge.setBridgeRelayer()
-        const recipientPubkey = bytes32ToPublicKey(legacyEvent.toSolana);
+        // 3. Use attestedDecrypt to get the plaintext (relayer has e.allow() access)
+        const recipientPubkey = bytes32ToPublicKey(bridgeEvent.toSolana);
         const baseSender = toBytes(evmAccount.address).slice(0, 20);
-
         console.log(`   Recipient: ${recipientPubkey.toBase58()}`);
 
-        // Use proper cross-chain re-encryption (attested reveal on EVM → encrypt for Solana)
-        // Falls back to demo mode if attestedReveal fails
         let encryptedAmountBytes: Uint8Array;
-
-        if (USE_DEMO_MODE) {
-            console.log(`   ⚠️ DEMO MODE: Using fixed amount instead of attestedReveal`);
-            console.log(`      Demo amount: ${DEMO_BRIDGE_AMOUNT} (${Number(DEMO_BRIDGE_AMOUNT) / 1e18} tokens)`);
-
-            // Re-encrypt demo amount for Solana TEE
-            const solanaCiphertext = await encryptValue(DEMO_BRIDGE_AMOUNT);
-            encryptedAmountBytes = new Uint8Array(hexToBuffer(solanaCiphertext));
-            console.log(`      ✅ Solana ciphertext: ${solanaCiphertext.slice(0, 40)}...`);
-        } else {
-            try {
-                encryptedAmountBytes = await crossChainReencrypt(legacyEvent.encryptedAmount);
-            } catch (err: any) {
-                console.error(`   ❌ crossChainReencrypt failed: ${err.message}`);
-                console.log(`   ⚠️ Falling back to DEMO MODE...`);
-
-                // Fallback to demo amount
-                const solanaCiphertext = await encryptValue(DEMO_BRIDGE_AMOUNT);
-                encryptedAmountBytes = new Uint8Array(hexToBuffer(solanaCiphertext));
-                console.log(`      Demo amount: ${DEMO_BRIDGE_AMOUNT} (${Number(DEMO_BRIDGE_AMOUNT) / 1e18} tokens)`);
-            }
+        try {
+            encryptedAmountBytes = await crossChainReencrypt(bridgeEvent.encryptedAmount);
+        } catch (err: any) {
+            console.error(`   ❌ crossChainReencrypt failed: ${err.message}`);
+            console.error(`   Cannot relay without real amount. Skipping this transaction.`);
+            return false;
         }
 
         console.log(`   ✅ Solana ciphertext ready: ${encryptedAmountBytes.length} bytes`);
@@ -766,7 +658,7 @@ async function monitorMode() {
 
                     console.log(`\n[${new Date().toISOString()}] New event in TX: ${log.transactionHash}`);
 
-                    // Try to parse as ConfidentialBridgeInitiated or ConfidentialBridgeInitiatedWithPlaintext
+                    // Try to parse as ConfidentialBridgeInitiated
                     try {
                         const decoded = decodeEventLog({
                             abi: CONFIDENTIAL_BRIDGE_FULL_ABI,
@@ -775,11 +667,7 @@ async function monitorMode() {
                         });
 
                         if (decoded.eventName === "ConfidentialBridgeInitiated") {
-                            console.log("    ✅ Confidential bridge event detected (legacy)!");
-                            processedTxHashes.add(txHash);  // Mark as processed BEFORE relaying
-                            await relayConfidentialToSolana(log.transactionHash!);
-                        } else if (decoded.eventName === "ConfidentialBridgeInitiatedWithPlaintext") {
-                            console.log("    ✅ Confidential bridge event detected (with plaintext)!");
+                            console.log("    ✅ Confidential bridge event detected!");
                             processedTxHashes.add(txHash);  // Mark as processed BEFORE relaying
                             await relayConfidentialToSolana(log.transactionHash!);
                         }

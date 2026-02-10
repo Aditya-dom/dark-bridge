@@ -8,7 +8,7 @@
  * 2. Extract encrypted amount handle and destination EVM address
  * 3. Use Inco TEE attestedDecrypt to get plaintext amount
  * 4. Re-encrypt amount for Base EVM using Inco SDK
- * 5. Call receiveFromSolanaForDemo on Base to mint tokens
+ * 5. Call receiveFromSolana on Base to mint tokens
  */
 
 import {
@@ -42,7 +42,6 @@ const evmAccount = privateKeyToAccount(EVM_PRIVATE_KEY as `0x${string}`);
 // Bridge ABI - includes receiveFromSolana functions
 const BRIDGE_ABI = parseAbi([
     "function receiveFromSolana(uint256 nonce, address localToken, address to, bytes encryptedAmount) external payable",
-    "function receiveFromSolanaForDemo(address localToken, address to, bytes encryptedAmount) external payable",
     "function getIncoFee() external view returns (uint256)",
     "event ConfidentialBridgeReceived(uint256 indexed nonce, address indexed localToken, address indexed to, bytes32 encryptedAmount)",
 ]);
@@ -232,15 +231,16 @@ async function relayToBase(destinationAddress: string, encryptedHandle: bigint) 
         const encryptedAmountHex = toHex(handleBytes);
         console.log(`  📦 Encrypted amount (hex): ${encryptedAmountHex}`);
 
-        // Call receiveFromSolanaForDemo on Base
+        // Call receiveFromSolana on Base
         // This mints confidential tokens to the destination address
         console.log("  📤 Sending mint transaction to Base...");
         
         const hash = await walletClient.writeContract({
             address: CONFIDENTIAL_BRIDGE_ADDRESS,
             abi: BRIDGE_ABI,
-            functionName: "receiveFromSolanaForDemo",
+            functionName: "receiveFromSolana",
             args: [
+                0n, // nonce
                 CONFIDENTIAL_TOKEN_ADDRESS,
                 destinationAddress as Address,
                 encryptedAmountHex,

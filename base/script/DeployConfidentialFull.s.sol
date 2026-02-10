@@ -8,25 +8,25 @@ import {ConfidentialBridge} from "../src/ConfidentialBridge.sol";
 /// @title DeployConfidentialFull
 /// @notice Full deployment script for confidential bridge with proper setup.
 /// @dev Deploys ConfidentialBridge, cDARK token, initializes, and registers.
-/// @dev Uses e.reveal() in bridgePrivateToSolana so attestedReveal works without user signature.
+/// @dev Uses e.allow() in bridgePrivateToSolana so relayer can attestedDecrypt with its wallet.
 /// 
 /// Usage:
 ///   PRIVATE_KEY=0x... forge script script/DeployConfidentialFull.s.sol \
 ///     --rpc-url base-sepolia --broadcast --verify
 contract DeployConfidentialFull is Script {
-    // Existing infrastructure on Base Sepolia
-    address constant EXISTING_BRIDGE = 0x5CF8A12B48a221aCeD811602d0F0752CBe110fBe;
-    address constant FACTORY = 0xEeEBDDa1bfE1C0aF25A56A3beb73e495dbaE7DEB;
+    // Existing infrastructure on Base Sepolia (alpha deployment)
+    address constant EXISTING_BRIDGE = 0x2B3550823301752c95290ec6f8781E88F0Bac8c4;
+    address constant FACTORY = 0xc2B907e5bb78A6E8C289A7bA890F3af5F6130Fd1;
     
     // Solana token mint for cDARK (in bytes32 format)
-    // 2wcB7tJ56xTa68zMstHhMBYymeCaBvG3Vp2xW9JMVNrH in base58
-    bytes32 constant SOLANA_TOKEN_MINT = 0x1cd8d28fb7697151a7202ba6f1aee1df7b201b5bce634fe0d48e0aadc8435fde;
+    // 3JWs353tgpFRVxb6Ubi85hDm5eBsbGrJFmVqNS8t6V3V in base58
+    bytes32 constant SOLANA_TOKEN_MINT = 0x223403719246903aaf8dc5029034932739e7641a28e51c89c199ab62e27d5598;
 
     function run() external {
         uint256 deployerPrivateKey = vm.envUint("PRIVATE_KEY");
         address deployer = vm.addr(deployerPrivateKey);
 
-        console2.log("=== Deploying Confidential Bridge (Full Setup with e.reveal) ===");
+        console2.log("=== Deploying Confidential Bridge (Full Setup with e.allow) ===");
         console2.log("Deployer:", deployer);
         console2.log("");
 
@@ -66,8 +66,8 @@ contract DeployConfidentialFull is Script {
         );
         console2.log("   Token registered");
 
-        // NOTE: No bridgeRelayer needed! The contract now uses e.reveal() 
-        // so the relayer can use attestedReveal() without user signature.
+        // NOTE: bridgeRelayer must be set via setBridgeRelayer() after deployment.
+        // The contract uses e.allow(amount, bridgeRelayer) so only the relayer can attestedDecrypt.
 
         vm.stopBroadcast();
 
@@ -79,8 +79,8 @@ contract DeployConfidentialFull is Script {
         console2.log("");
         console2.log("=== How It Works ===");
         console2.log("1. User calls bridgePrivateToSolana() with encrypted amount");
-        console2.log("2. Contract burns tokens and calls e.reveal(amount)");
-        console2.log("3. Relayer uses attestedReveal() - no user signature needed");
+        console2.log("2. Contract burns tokens and calls e.allow(amount, bridgeRelayer)");
+        console2.log("3. Relayer uses attestedDecrypt() with its own wallet signature");
         console2.log("4. Relayer re-encrypts for Solana TEE and relays");
         console2.log("");
         console2.log("=== Next Steps ===");

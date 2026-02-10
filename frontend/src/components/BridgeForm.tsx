@@ -29,7 +29,6 @@ import {
 // ABI for bridge operations
 const BRIDGE_ABI = parseAbi([
     "function bridgePrivateToSolana(address localToken, bytes32 toSolana, bytes encryptedAmount) external payable",
-    "function bridgePrivateToSolanaPlaintext(address localToken, bytes32 toSolana, uint256 amount) external payable",
     "function getIncoFee() external view returns (uint256)",
 ]);
 
@@ -419,8 +418,20 @@ export function BridgeForm() {
             incoFee = BigInt("100000000000000"); // 0.0001 ETH fallback
         }
 
-        // Step 2: Parse the plaintext amount
+        // Step 2: Parse amount and encrypt client-side using Inco SDK
         const amountWei = parseUnits(amount, 18);
+
+        setStatus("Encrypting amount...");
+        // Import and initialize Inco Lightning for client-side encryption
+        const { Lightning, supportedChains, handleTypes } = await import("@inco/js");
+        const zap = await Lightning.latest("testnet", supportedChains.baseSepolia);
+
+        // Encrypt the amount client-side — only the ciphertext goes on-chain
+        const encryptedAmount = await zap.encrypt(amountWei, {
+            accountAddress: evmAddress,
+            dappAddress: CONFIDENTIAL_BRIDGE_ADDRESS as `0x${string}`,
+            handleType: handleTypes.euint256,
+        });
 
         // Step 3: Convert Solana pubkey to bytes32
         const solanaPubkeyBytes = solanaPublicKey.toBytes();
@@ -440,17 +451,17 @@ export function BridgeForm() {
             console.warn("Could not get initial vault signature:", e);
         }
 
-        // Step 4: Call bridgePrivateToSolanaPlaintext (simpler approach - no client-side encryption needed)
-        // The contract encrypts the amount on-chain and emits plaintext in event for relayer
+        // Step 4: Call bridgePrivateToSolana with client-encrypted amount
+        // The amount is encrypted client-side — only the relayer (via attestedDecrypt) can learn it
         setStatus("Sending bridge transaction...");
         const hash = await walletClient.writeContract({
             address: CONFIDENTIAL_BRIDGE_ADDRESS as `0x${string}`,
             abi: BRIDGE_ABI,
-            functionName: "bridgePrivateToSolanaPlaintext",
+            functionName: "bridgePrivateToSolana",
             args: [
                 CONFIDENTIAL_TOKEN_ADDRESS as `0x${string}`,
                 solanaBytes32 as `0x${string}`,
-                amountWei
+                encryptedAmount,
             ],
             value: incoFee,
         });
