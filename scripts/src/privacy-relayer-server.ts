@@ -93,13 +93,9 @@ const evmWalletClient = createWalletClient({
     transport: http("https://sepolia.base.org"),
 });
 
-// Inco Lightning instance
-let zapInstance: any = null;
-async function getZap() {
-    if (!zapInstance) {
-        zapInstance = await Lightning.latest('devnet', 84532);
-    }
-    return zapInstance;
+// Inco Lightning — create fresh instances per-request to avoid stale state
+async function createZap() {
+    return Lightning.latest('devnet', 84532);
 }
 
 // --- Storage for decrypt authorizations ---
@@ -276,41 +272,45 @@ app.post('/relay-to-base', async (c) => {
         console.log(`   Token: ${tokenAddress}`);
 
         // Step 1: Encrypt the plaintext for EVM using Inco zap.encrypt()
+        // IMPORTANT: Create a FRESH zap instance each time to avoid stale state
         console.log(`   🔐 Encrypting for EVM via Inco...`);
-        const { supportedChains, handleTypes } = await import("@inco/js");
-        const zap = await getZap();
+        const { handleTypes } = await import("@inco/js");
+        const zap = await Lightning.latest('devnet', 84532);
 
-        const ciphertext = await zap.encrypt(amount, {
+        const rawCiphertext = await zap.encrypt(amount, {
             accountAddress: evmAccount.address,
             dappAddress: tokenAddress,
             handleType: handleTypes.euint256,
         });
 
-        console.log(`   ✅ EVM ciphertext ready (${ciphertext.length} bytes)`);
+        // Normalize ciphertext to hex string for viem
+        let ciphertext: `0x${string}`;
+        if (typeof rawCiphertext === 'string') {
+            ciphertext = (rawCiphertext.startsWith('0x')
+                ? rawCiphertext
+                : `0x${rawCiphertext}`) as `0x${string}`;
+        } else if (typeof rawCiphertext === 'object' && rawCiphertext !== null && 'length' in rawCiphertext) {
+            // Uint8Array or Buffer-like
+            ciphertext = `0x${Buffer.from(rawCiphertext as any).toString('hex')}` as `0x${string}`;
+        } else {
+            throw new Error(`Unexpected ciphertext type: ${typeof rawCiphertext}`);
+        }
 
-        // Step 2: Get Inco fee
-        // Use inco.getFee() on the token contract (same check as requiresFee modifier)
-        // The bridge contract's getIncoFee() may return a stale/different value
-        let incoFee: bigint;
-        try {
-            incoFee = await basePublicClient.readContract({
-                address: tokenAddress,
-                abi: parseAbi(["function getIncoFee() view returns (uint256)"]),
-                functionName: "getIncoFee",
-            });
-        } catch {
-            // Token may not expose getIncoFee — use safe default (0.001 ETH)
-            incoFee = BigInt("1000000000000000");
+        // Validate ciphertext format — expected ~288 bytes (576 hex chars + 0x prefix)
+        const ctByteLength = (ciphertext.length - 2) / 2;
+        console.log(`   ✅ EVM ciphertext ready (${ctByteLength} bytes, hex length: ${ciphertext.length})`);
+        if (ctByteLength < 100 || ctByteLength > 1000) {
+            console.warn(`   ⚠️ WARNING: Ciphertext size ${ctByteLength} bytes is outside expected range (100-1000). Expected ~288 bytes.`);
         }
-        // Ensure minimum fee of 0.001 ETH (Inco's typical fee for newEuint256)
-        if (incoFee < BigInt("1000000000000000")) {
-            incoFee = BigInt("1000000000000000");
-        }
+
+        // Step 2: Inco fee — fixed at 0.001 ETH (matches contract's inco.getFee())
+        const incoFee = BigInt("1000000000000000"); // 0.001 ETH
         console.log(`   💰 Inco fee: ${incoFee} wei`);
 
         // Step 3: Call faucetMint on the token contract
         // faucetMint is publicly callable and accepts Inco-encrypted ciphertext
         console.log(`   📤 Calling faucetMint on ${tokenAddress}...`);
+        console.log(`   📝 Ciphertext preview: ${ciphertext.slice(0, 42)}...${ciphertext.slice(-10)}`);
         
         const FAUCET_MINT_ABI = parseAbi([
             "function faucetMint(address to, bytes encryptedAmount) external payable",
@@ -463,13 +463,13 @@ async function processAuthorization(handle: string): Promise<boolean> {
 
     try {
         // Step 1: Use the user's signature to decrypt via Inco
-        const zap = await getZap();
+        const zap = await createZap();
         
         console.log(`   📤 Requesting attested decrypt with user's signature...`);
         
         // The Inco SDK needs to use the pre-signed authorization
         // We need to call the lower-level API directly with the signature
-        const decryptResults = await zap.attestedDecryptWithSignature(
+        const decryptResults = await (zap as any).attestedDecryptWithSignature(
             auth.userAddress,
             [auth.handle],
             auth.signature,
