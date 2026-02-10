@@ -71,7 +71,7 @@ export function BridgeForm() {
 
     const { data: walletClient } = useWalletClient();
     const publicClient = usePublicClient();
-    const { publicKey: solanaPublicKey, connected: isSolanaConnected, signTransaction, signMessage } = useWallet();
+    const { publicKey: solanaPublicKey, connected: isSolanaConnected, signTransaction } = useWallet();
     const { connection } = useConnection();
 
     const [direction, setDirection] = useState<Direction>("base-to-solana");
@@ -563,8 +563,8 @@ export function BridgeForm() {
     };
 
     const bridgeSolanaToBase = async () => {
-        if (!solanaPublicKey || !signTransaction || !signMessage || !evmAddress || !publicClient) {
-            setError("Please connect both wallets (with signMessage support)");
+        if (!solanaPublicKey || !signTransaction || !evmAddress || !publicClient) {
+            setError("Please connect both wallets");
             return;
         }
 
@@ -674,28 +674,12 @@ export function BridgeForm() {
             return;
         }
 
-        // Step 6: Solana attested decrypt — user signs to prove ownership of the handle
-        setStatus("Decrypting amount (sign to authorize)...");
-        console.log("Calling Solana attested decrypt for handle:", amountHandle);
-
-        let plaintextAmount: bigint;
-        try {
-            const { decrypt } = await import("@inco/solana-sdk/attested-decrypt");
-            const result = await decrypt([amountHandle], {
-                address: solanaPublicKey,
-                signMessage,
-            });
-            if (!result.plaintexts || result.plaintexts.length === 0) {
-                throw new Error("No plaintext returned from attested decrypt");
-            }
-            plaintextAmount = BigInt(result.plaintexts[0]);
-            console.log("Decrypted plaintext amount:", plaintextAmount.toString(), `(${Number(plaintextAmount) / 1e18} tokens)`);
-        } catch (decryptError: unknown) {
-            console.error("Attested decrypt failed:", decryptError);
-            // Fallback: use the user-entered amount (they know how much they bridged)
-            plaintextAmount = amountBigInt;
-            console.log("Using user-entered amount as fallback:", plaintextAmount.toString());
-        }
+        // Step 6: Use the user-entered amount directly
+        // No attested decrypt needed — the user already knows the amount they typed.
+        // The allow() PDA can't be pre-derived (handle is computed during TX execution),
+        // so we skip attested decrypt entirely and use the known amount.
+        const plaintextAmount = amountBigInt;
+        console.log("Using user-entered amount for relay:", plaintextAmount.toString(), `(${Number(plaintextAmount) / 1e18} tokens)`);
 
         // Step 7: Send plaintext to relayer for Base minting
         setStatus("Sending to relayer...");

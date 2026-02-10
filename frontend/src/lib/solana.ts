@@ -220,37 +220,17 @@ export async function getVaultBalance(
 }
 
 /**
- * Derive allowance PDA for Inco Lightning.
- *
- * IMPORTANT: Inco Lightning manages allowance accounts internally.
- * We derive placeholder PDAs using the owner + index to provide unique addresses
- * that Inco can use for allowance storage. The program ID must be INCO_LIGHTNING_ID
- * since Inco owns these accounts.
- */
-function deriveIncoAllowancePda(owner: PublicKey, index: number): PublicKey {
-    const [pda] = PublicKey.findProgramAddressSync(
-        [
-            Buffer.from("allowance"),
-            owner.toBuffer(),
-            Buffer.from([index]),
-        ],
-        INCO_LIGHTNING_ID
-    );
-    return pda;
-}
-
-/**
  * Build the bridge_confidential_out instruction for Solana → Base transfer.
  * Uses client-side encrypted ciphertext (via @inco/solana-sdk) for real privacy.
  *
- * IMPORTANT: This function includes 4 remaining accounts for Inco ACL grants:
- * - remaining_accounts[0]: Allowance PDA for new_balance handle
- * - remaining_accounts[1]: Owner pubkey (allowed to decrypt new_balance)
- * - remaining_accounts[2]: Allowance PDA for actual_amount handle
- * - remaining_accounts[3]: Owner pubkey (allowed to decrypt actual_amount)
- *
- * This ensures that BOTH the new balance AND the bridged amount get allow() called,
- * enabling attested decrypt for cross-chain relaying.
+ * NOTE: We do NOT pass remaining_accounts for Inco allow() grants here because:
+ * - The allowance PDA seeds require the encrypted handle value (u128 LE + allowed_address)
+ * - The handle is computed BY the Inco Lightning program during execution
+ * - We can't know the handle before the transaction is submitted
+ * - The program's allow() calls are guarded by `if remaining_accounts.len() >= 2`
+ *   so they simply get skipped when no remaining accounts are passed
+ * - The user already knows the amount they entered, so attested decrypt is NOT needed
+ *   for the cross-chain relay — the frontend sends the user-known amount to the relayer
  */
 export function buildBridgeConfidentialOutInstruction(
     owner: PublicKey,
@@ -280,14 +260,8 @@ export function buildBridgeConfidentialOutInstruction(
         destinationBytes,
     ]);
 
-    // Derive allowance PDAs for Inco ACL grants (remaining_accounts)
-    // remaining_accounts[0]: Allowance PDA for new_balance handle
-    // remaining_accounts[1]: Owner pubkey (allowed to decrypt new_balance)
-    // remaining_accounts[2]: Allowance PDA for actual_amount handle
-    // remaining_accounts[3]: Owner pubkey (allowed to decrypt actual_amount)
-    const allowancePda0 = deriveIncoAllowancePda(owner, 0);
-    const allowancePda1 = deriveIncoAllowancePda(owner, 1);
-
+    // Only pass the 4 required accounts — no remaining_accounts for allow() 
+    // since we can't pre-derive the allowance PDA without knowing the handle
     return new TransactionInstruction({
         programId: new PublicKey(BRIDGE_PROGRAM_ID),
         keys: [
@@ -295,11 +269,6 @@ export function buildBridgeConfidentialOutInstruction(
             { pubkey: vaultPda, isSigner: false, isWritable: true },
             { pubkey: INCO_LIGHTNING_ID, isSigner: false, isWritable: false },
             { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
-            // remaining_accounts for allow() grants:
-            { pubkey: allowancePda0, isSigner: false, isWritable: true },  // allowance for new_balance
-            { pubkey: owner, isSigner: false, isWritable: false },         // owner allowed to decrypt
-            { pubkey: allowancePda1, isSigner: false, isWritable: true },  // allowance for actual_amount
-            { pubkey: owner, isSigner: false, isWritable: false },         // owner allowed to decrypt
         ],
         data: instructionData,
     });
