@@ -69,8 +69,8 @@ export function Faucet() {
             console.log("Amount:", mintAmount.toString());
 
             // Client-side encrypt the amount using Inco zap
-            const { Lightning, handleTypes } = await import("@inco/js/lite");
-            const { supportedChains } = await import("@inco/js/lite");
+            const { Lightning } = await import("@inco/js/lite");
+            const { handleTypes, supportedChains } = await import("@inco/js");
             const zap = await Lightning.latest("testnet", supportedChains.baseSepolia);
 
             console.log("Encrypting amount with Inco...");
