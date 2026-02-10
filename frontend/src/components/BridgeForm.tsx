@@ -513,37 +513,20 @@ export function BridgeForm() {
             }
         }
 
-        if (!evmHandle) {
-            throw new Error("Could not find ConfidentialBridgeInitiated event in receipt");
-        }
-
-        // Step 6: User calls attestedDecrypt to decrypt the handle
-        // The user was granted e.allow() in the contract, so they can decrypt
-        setStatus("Decrypting amount (sign to authorize)...");
-        console.log("Calling attestedDecrypt with user wallet for handle:", evmHandle);
-
-        const decryptResults = await zap.attestedDecrypt(
-            walletClient as any,
-            [evmHandle as `0x${string}`],
-        );
-
-        if (!decryptResults || decryptResults.length === 0) {
-            throw new Error("Failed to decrypt handle — no results from Inco");
-        }
-
-        // Extract plaintext from the attestation result
-        let plaintextAmount: bigint;
-        const decryptResult = decryptResults[0];
-        if (typeof decryptResult === "bigint") {
-            plaintextAmount = decryptResult;
-        } else if (decryptResult && typeof decryptResult === "object" && "plaintext" in decryptResult) {
-            const pt = (decryptResult as { plaintext: { value: bigint } }).plaintext;
-            plaintextAmount = BigInt(pt.value);
+        // Log the extracted handle (useful for debugging, but we don't need to decrypt it)
+        if (evmHandle) {
+            console.log("Extracted EVM handle from event:", evmHandle);
         } else {
-            plaintextAmount = BigInt(String(decryptResult));
+            console.warn("Could not extract EVM handle from event logs (non-critical)");
         }
 
-        console.log("Decrypted plaintext amount:", plaintextAmount.toString(), `(${Number(plaintextAmount) / 1e18} tokens)`);
+        // Step 6: Use the known plaintext amount directly
+        // The user already knows the amount they entered — no need for attestedDecrypt.
+        // The relayer is a trusted intermediary that re-encrypts for Solana TEE.
+        // NOTE: The relayer sees the plaintext during cross-chain re-encryption.
+        // This is architecturally necessary — Inco FHE handles can't transfer between chains.
+        const plaintextAmount = amountWei;
+        console.log("Using known plaintext amount:", plaintextAmount.toString(), `(${Number(plaintextAmount) / 1e18} tokens)`);
 
         // Step 7: Send plaintext + bridge info to relayer API for Solana relay
         setStatus("Sending to relayer...");

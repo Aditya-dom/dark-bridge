@@ -639,12 +639,12 @@ contract ConfidentialBridge is ReentrancyGuardTransient, OwnableRoles, Initializ
 
         // Create encrypted handle from ciphertext (only done ONCE here)
         euint256 amount = encryptedAmount.newEuint256(msg.sender);
-        // Allow both this contract AND the token contract to use the handle
+        // Allow this contract, token contract, sender, and relayer to use the handle
         e.allow(amount, address(this));
         e.allow(amount, localToken);
+        e.allow(amount, msg.sender);
         
         // Grant relayer access to decrypt the amount via attestedDecrypt
-        // Only the authorized bridgeRelayer can learn the plaintext — NOT public
         require(bridgeRelayer != address(0), "Bridge relayer not set");
         e.allow(amount, bridgeRelayer);
 
@@ -690,9 +690,10 @@ contract ConfidentialBridge is ReentrancyGuardTransient, OwnableRoles, Initializ
 
         // Create encrypted handle from ciphertext (only done ONCE here)
         euint256 amount = encryptedAmount.newEuint256(msg.sender);
-        // Allow both this contract AND the token contract to use the handle
+        // Allow this contract, token contract, sender, and relayer to use the handle
         e.allow(amount, address(this));
         e.allow(amount, localToken);
+        e.allow(amount, msg.sender);
         
         // Grant relayer access to decrypt the amount via attestedDecrypt
         require(bridgeRelayer != address(0), "Bridge relayer not set");

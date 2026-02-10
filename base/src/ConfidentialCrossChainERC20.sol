@@ -290,9 +290,9 @@ contract ConfidentialCrossChainERC20 is Initializable {
         e.allow(_balances[to], address(this));
         e.allow(_balances[to], to);
 
-        // Update total supply
+        // Update total supply (kept encrypted for privacy)
         totalSupply = e.add(totalSupply, amount);
-        e.reveal(totalSupply);
+        e.allow(totalSupply, address(this));
 
         emit ConfidentialMint(to, amount);
     }
@@ -350,9 +350,9 @@ contract ConfidentialCrossChainERC20 is Initializable {
         e.allow(_balances[to], address(this));
         e.allow(_balances[to], to);
 
-        // Update total supply
+        // Update total supply (kept encrypted for privacy)
         totalSupply = e.add(totalSupply, amount);
-        e.reveal(totalSupply);
+        e.allow(totalSupply, address(this));
 
         emit ConfidentialMint(to, amount);
     }
@@ -369,7 +369,7 @@ contract ConfidentialCrossChainERC20 is Initializable {
 
         // Update total supply
         totalSupply = e.sub(totalSupply, actualBurn);
-        e.reveal(totalSupply);
+        e.allow(totalSupply, address(this));
 
         emit ConfidentialBurn(from, actualBurn);
     }
@@ -406,9 +406,9 @@ contract ConfidentialCrossChainERC20 is Initializable {
         e.allow(_balances[msg.sender], address(this));
         e.allow(_balances[msg.sender], msg.sender);
 
-        // Update total supply
+        // Update total supply (kept encrypted for privacy)
         totalSupply = e.add(totalSupply, encrypted);
-        e.reveal(totalSupply);
+        e.allow(totalSupply, address(this));
 
         emit Deposit(msg.sender, amount, encrypted);
     }
@@ -442,9 +442,9 @@ contract ConfidentialCrossChainERC20 is Initializable {
         e.allow(_balances[msg.sender], address(this));
         e.allow(_balances[msg.sender], msg.sender);
 
-        // 5. Update total supply
+        // 5. Update total supply (kept encrypted for privacy)
         totalSupply = e.sub(totalSupply, e.asEuint256(amount));
-        e.reveal(totalSupply);
+        e.allow(totalSupply, address(this));
 
         // 6. Transfer underlying tokens to sender
         IERC20(_underlyingToken).transfer(msg.sender, amount);
@@ -503,9 +503,9 @@ contract ConfidentialCrossChainERC20 is Initializable {
         e.allow(_balances[to], address(this));
         e.allow(_balances[to], to);
 
-        // Update total supply
+        // Update total supply (kept encrypted for privacy)
         totalSupply = e.add(totalSupply, amount);
-        e.reveal(totalSupply);
+        e.allow(totalSupply, address(this));
 
         emit ConfidentialMint(to, amount);
     }
