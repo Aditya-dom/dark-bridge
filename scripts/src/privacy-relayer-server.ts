@@ -631,7 +631,7 @@ async function relayToSolana(bridgeEvent: BridgeEvent, encryptedAmountBytes: Uin
             console.log(`   ⚠️ Vault doesn't exist for recipient ${recipientPubkey.toBase58()}`);
             console.log(`   Vault PDA: ${vaultPda.toBase58()}`);
             console.log(`   The recipient must initialize a ConfidentialVault first.`);
-            return false;
+            return null;
         }
 
         // Build relay_receive_confidential instruction

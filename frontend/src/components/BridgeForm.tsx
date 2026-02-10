@@ -484,8 +484,16 @@ export function BridgeForm() {
 
         setTxHash(hash);
         setStatus("Waiting for confirmation...");
+        console.log("TX submitted:", hash);
 
-        const receipt = await publicClient.waitForTransactionReceipt({ hash });
+        const receipt = await publicClient.waitForTransactionReceipt({ 
+            hash,
+            timeout: 120_000, // 2 minute timeout
+        });
+
+        if (receipt.status === "reverted") {
+            throw new Error(`Transaction reverted. You may need to mint cDARK tokens first using the faucet. TX: ${hash}`);
+        }
 
         console.log("Bridge transaction confirmed:", receipt.transactionHash);
         console.log("Block number:", receipt.blockNumber);
