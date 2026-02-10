@@ -289,16 +289,22 @@ app.post('/relay-to-base', async (c) => {
         console.log(`   ✅ EVM ciphertext ready (${ciphertext.length} bytes)`);
 
         // Step 2: Get Inco fee
+        // Use inco.getFee() on the token contract (same check as requiresFee modifier)
+        // The bridge contract's getIncoFee() may return a stale/different value
         let incoFee: bigint;
         try {
             incoFee = await basePublicClient.readContract({
-                address: CONFIDENTIAL_BRIDGE_ADDRESS,
+                address: tokenAddress,
                 abi: parseAbi(["function getIncoFee() view returns (uint256)"]),
                 functionName: "getIncoFee",
             });
         } catch {
-            // Default fee
-            incoFee = BigInt("1000000000000000"); // 0.001 ETH
+            // Token may not expose getIncoFee — use safe default (0.001 ETH)
+            incoFee = BigInt("1000000000000000");
+        }
+        // Ensure minimum fee of 0.001 ETH (Inco's typical fee for newEuint256)
+        if (incoFee < BigInt("1000000000000000")) {
+            incoFee = BigInt("1000000000000000");
         }
         console.log(`   💰 Inco fee: ${incoFee} wei`);
 
