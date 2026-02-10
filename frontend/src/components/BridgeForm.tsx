@@ -13,7 +13,7 @@ import {
     checkVaultExists,
     initializeVault,
     getDefaultTokenMint,
-    bridgeConfidentialOutViaRelayer,
+    bridgeConfidentialOutDirect,
     getVaultBalance,
     deriveVaultPda,
 } from "@/lib/solana";
@@ -57,7 +57,7 @@ export function BridgeForm() {
 
     const { data: walletClient } = useWalletClient();
     const publicClient = usePublicClient();
-    const { publicKey: solanaPublicKey, connected: isSolanaConnected, signTransaction, signMessage } = useWallet();
+    const { publicKey: solanaPublicKey, connected: isSolanaConnected, signTransaction, sendTransaction } = useWallet();
     const { connection } = useConnection();
 
     const [direction, setDirection] = useState<Direction>("base-to-solana");
@@ -539,7 +539,7 @@ export function BridgeForm() {
     };
 
     const bridgeSolanaToBase = async () => {
-        if (!solanaPublicKey || !signMessage || !evmAddress || !publicClient) {
+        if (!solanaPublicKey || !sendTransaction || !evmAddress || !publicClient) {
             setError("Please connect both wallets");
             return;
         }
@@ -573,18 +573,16 @@ export function BridgeForm() {
             console.warn("Could not get block number:", e);
         }
 
-        // Step 2: Sign message off-chain and send to relayer
-        // The relayer will call relay_bridge_confidential_out on Solana
-        // so only the relayer's address appears on-chain (SENDER PRIVACY!)
-        setStatus("Signing private bridge request...");
-        const result = await bridgeConfidentialOutViaRelayer(
+        // Step 2: Build and send bridge_confidential_out transaction directly
+        // The user signs a real Solana transaction (amounts stay encrypted on-chain)
+        setStatus("Signing bridge transaction...");
+        const result = await bridgeConfidentialOutDirect(
             connection,
             solanaPublicKey,
             tokenMint,
             evmAddress,
             amountBigInt,
-            signMessage,
-            RELAYER_API_URL
+            sendTransaction,
         );
 
         const solanaTxSig = result.solanaTxHash;

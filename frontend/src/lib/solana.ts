@@ -275,24 +275,20 @@ export function buildBridgeConfidentialOutInstruction(
 }
 
 /**
- * Bridge tokens from Solana to Base (confidential) — via RELAYER for sender privacy.
+ * Bridge tokens from Solana to Base (confidential) — direct on-chain transaction.
  * 
- * Instead of the user signing the on-chain transaction directly (which would
- * expose their wallet address as the fee payer/signer), the user:
- * 1. Signs an off-chain Ed25519 message (via wallet's signMessage)
- * 2. Sends the signature + encrypted amount to the relayer
- * 3. The relayer submits the tx using relay_bridge_confidential_out
- * 
- * This way, only the relayer's address appears on-chain.
+ * The user signs and sends the bridge_confidential_out transaction directly.
+ * The encrypted amount is generated client-side via Inco Solana SDK.
+ * After the Solana TX confirms, the frontend POSTs the plaintext to the
+ * relayer's /relay-to-base endpoint for Base minting.
  */
-export async function bridgeConfidentialOutViaRelayer(
+export async function bridgeConfidentialOutDirect(
     connection: Connection,
     owner: PublicKey,
     tokenMint: PublicKey,
     destinationEvmAddress: string,
     amount: bigint,
-    signMessage: (message: Uint8Array) => Promise<Uint8Array>,
-    relayerApiUrl: string
+    sendTransaction: (transaction: Transaction, connection: Connection) => Promise<string>,
 ): Promise<{ solanaTxHash: string }> {
     // Check vault exists
     const exists = await checkVaultExists(connection, owner, tokenMint);
@@ -309,48 +305,27 @@ export async function bridgeConfidentialOutViaRelayer(
     // Encrypt amount client-side using Inco Solana SDK
     const { encryptValue } = await import("@inco/solana-sdk/encryption");
     const encryptedHex = await encryptValue(amount);
-    // Convert hex string to hex without 0x prefix
+    // Convert hex string to bytes
     const hexClean = encryptedHex.startsWith("0x") ? encryptedHex.slice(2) : encryptedHex;
+    const encryptedAmountBytes = Buffer.from(hexClean, "hex");
 
-    // Build the off-chain message for Ed25519 signing
-    // Message: owner_pubkey(32) + destination_evm(20) + nonce(8) + deadline(8)
-    const nonce = Date.now(); // Use timestamp as nonce for uniqueness
-    const deadline = Math.floor(Date.now() / 1000) + 300; // 5 minutes from now
+    // Build the bridge_confidential_out instruction
+    const ix = buildBridgeConfidentialOutInstruction(
+        owner,
+        tokenMint,
+        destinationEvmAddress,
+        encryptedAmountBytes,
+    );
 
-    const evmAddressClean = destinationEvmAddress.startsWith("0x")
-        ? destinationEvmAddress.slice(2)
-        : destinationEvmAddress;
+    // Build and send transaction
+    const tx = new Transaction().add(ix);
+    tx.feePayer = owner;
+    tx.recentBlockhash = (await connection.getLatestBlockhash()).blockhash;
 
-    const message = Buffer.concat([
-        owner.toBuffer(),                           // 32 bytes
-        Buffer.from(evmAddressClean, "hex"),         // 20 bytes
-        Buffer.from(new BigUint64Array([BigInt(nonce)]).buffer),    // 8 bytes LE
-        Buffer.from(new BigInt64Array([BigInt(deadline)]).buffer),  // 8 bytes LE
-    ]);
+    const signature = await sendTransaction(tx, connection);
 
-    // Sign message off-chain using wallet adapter's signMessage
-    const signature = await signMessage(new Uint8Array(message));
+    // Wait for confirmation
+    await connection.confirmTransaction(signature, "confirmed");
 
-    // Send to relayer
-    const response = await fetch(`${relayerApiUrl}/relay-bridge-out`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-            ownerPubkey: owner.toBase58(),
-            tokenMint: tokenMint.toBase58(),
-            destinationEvm: destinationEvmAddress,
-            encryptedAmount: hexClean,
-            signature: Buffer.from(signature).toString("base64"),
-            nonce,
-            deadline,
-            plaintextAmount: amount.toString(),
-        }),
-    });
-
-    const data = await response.json();
-    if (!response.ok) {
-        throw new Error(data.error || "Relayer failed to submit bridge-out transaction");
-    }
-
-    return { solanaTxHash: data.solanaTxHash };
+    return { solanaTxHash: signature };
 }
