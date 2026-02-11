@@ -157,15 +157,15 @@ const app = new Hono();
 
 // Enable CORS for frontend
 app.use('/*', cors({
-    origin: ['http://localhost:3000', 'http://localhost:3001', '*'],
+    origin: '*',
     allowMethods: ['GET', 'POST', 'OPTIONS'],
-    allowHeaders: ['Content-Type'],
+    allowHeaders: ['Content-Type', 'Authorization'],
 }));
 
 // Health check
 app.get('/health', (c) => {
-    return c.json({ 
-        status: 'ok', 
+    return c.json({
+        status: 'ok',
         relayer: evmAccount.address,
         bridge: CONFIDENTIAL_BRIDGE_ADDRESS,
         pendingEvents: pendingBridgeEvents.size,
@@ -461,7 +461,7 @@ app.post('/relay-to-base', async (c) => {
         // faucetMint is publicly callable and accepts Inco-encrypted ciphertext
         console.log(`   📤 Calling faucetMint on ${tokenAddress}...`);
         console.log(`   📝 Ciphertext preview: ${ciphertext.slice(0, 42)}...${ciphertext.slice(-10)}`);
-        
+
         const FAUCET_MINT_ABI = parseAbi([
             "function faucetMint(address to, bytes encryptedAmount) external payable",
         ]);
@@ -537,7 +537,7 @@ app.post('/relay-bridge-out', async (c) => {
 
         const ownerKey = new PublicKey(ownerPubkey);
         const mintKey = new PublicKey(tokenMint || "3JWs353tgpFRVxb6Ubi85hDm5eBsbGrJFmVqNS8t6V3V");
-        
+
         // Decode the Ed25519 signature from base64
         const signatureBytes = Buffer.from(signature, "base64");
         if (signatureBytes.length !== 64) {
@@ -604,11 +604,11 @@ app.post('/relay-bridge-out', async (c) => {
         //   message_instruction_index: u16,
         // }
         const ED25519_PROGRAM_ID = new PublicKey("Ed25519SigVerify111111111111111111111111111");
-        
+
         const headerSize = 2; // num_sigs(1) + padding(1)
         const sigDescriptorSize = 14; // 7 x u16 = 14 bytes per signature descriptor
         const dataStart = headerSize + sigDescriptorSize;
-        
+
         const sigOffset = dataStart;
         const sigLen = 64;
         const pubkeyOffset = sigOffset + sigLen;
@@ -693,7 +693,7 @@ app.post('/relay-bridge-out', async (c) => {
         // Build and send transaction with Ed25519 pre-instruction + relay instruction
         console.log(`   🚀 Sending relay_bridge_confidential_out transaction...`);
         const { Transaction: SolTx, sendAndConfirmTransaction } = await import("@solana/web3.js");
-        
+
         const tx = new SolTx();
         tx.add(ed25519Ix);  // Ed25519 signature verification (must come first!)
         tx.add(relayIx);    // relay_bridge_confidential_out
@@ -709,8 +709,8 @@ app.post('/relay-bridge-out', async (c) => {
         console.log(`   🔒 Only relayer ${payerKeypair.publicKey.toBase58()} is visible on-chain!`);
         console.log(`   Explorer: https://explorer.solana.com/tx/${solanaTxHash}?cluster=devnet`);
 
-        return c.json({ 
-            success: true, 
+        return c.json({
+            success: true,
             solanaTxHash,
             message: 'Bridge-out submitted via relayer (sender privacy preserved)',
         });
@@ -773,8 +773,8 @@ app.post('/authorize', async (c) => {
             console.log(`   ⏳ No matching bridge event yet, waiting...`);
         }
 
-        return c.json({ 
-            success: true, 
+        return c.json({
+            success: true,
             message: 'Authorization received',
             handle,
         });
@@ -791,7 +791,7 @@ app.post('/authorize', async (c) => {
  */
 app.get('/status/:handle', (c) => {
     const handle = c.req.param('handle') as Hex;
-    
+
     const auth = authorizations.get(handle);
     const bridgeEvent = Array.from(pendingBridgeEvents.values())
         .find(e => e.encryptedAmount.toLowerCase() === handle.toLowerCase());
@@ -813,33 +813,33 @@ app.get('/status/:handle', (c) => {
  */
 app.get('/tx/:hash', (c) => {
     const hash = c.req.param('hash').toLowerCase();
-    
+
     // Check Base→Solana relays
     const solanaRelay = completedRelays.get(hash);
     if (solanaRelay) {
-        return c.json({ 
+        return c.json({
             status: 'completed',
             solanaTxHash: solanaRelay.solanaTxHash,
             baseTxHash: solanaRelay.baseTxHash,
         });
     }
-    
+
     // Check Solana→Base relays
     const baseMint = completedBaseMints.get(hash);
     if (baseMint) {
-        return c.json({ 
+        return c.json({
             status: 'completed',
             baseMintTxHash: baseMint.baseMintTxHash,
             solanaTxHash: baseMint.solanaTxHash,
         });
     }
-    
+
     // Check if pending
     const pending = pendingBridgeEvents.get(hash);
     if (pending) {
         return c.json({ status: pending.processed ? 'completed' : 'pending' });
     }
-    
+
     return c.json({ status: 'unknown' }, 404);
 });
 
@@ -883,9 +883,9 @@ async function processAuthorization(handle: string): Promise<boolean> {
     try {
         // Step 1: Use the user's signature to decrypt via Inco
         const zap = await createZap();
-        
+
         console.log(`   📤 Requesting attested decrypt with user's signature...`);
-        
+
         // The Inco SDK needs to use the pre-signed authorization
         // We need to call the lower-level API directly with the signature
         const decryptResults = await (zap as any).attestedDecryptWithSignature(
@@ -935,12 +935,12 @@ async function processAuthorization(handle: string): Promise<boolean> {
         return !!solanaTxHash;
     } catch (error: any) {
         console.error(`   ❌ Failed to process:`, error.message);
-        
+
         if (error.message?.includes('attestedDecryptWithSignature')) {
             console.error(`   ❌ Inco SDK doesn't support pre-signed auth yet.`);
             console.error(`   Cannot relay without real amount.`);
         }
-        
+
         return false;
     }
 }
@@ -954,7 +954,7 @@ async function relayToSolana(bridgeEvent: BridgeEvent, encryptedAmountBytes: Uin
         // Use the known Solana token mint (not from remoteToken which may be 0x0 for /relay calls)
         const SOLANA_TOKEN_MINT = new PublicKey("3JWs353tgpFRVxb6Ubi85hDm5eBsbGrJFmVqNS8t6V3V");
         const tokenMint = SOLANA_TOKEN_MINT;
-        
+
         console.log(`   🚀 Relaying to Solana:`);
         console.log(`      Recipient: ${recipientPubkey.toBase58()}`);
         console.log(`      Token Mint: ${tokenMint.toBase58()}`);
@@ -986,7 +986,7 @@ async function relayToSolana(bridgeEvent: BridgeEvent, encryptedAmountBytes: Uin
         // Check vault exists
         const connection = new Connection(config.solana.rpcUrl, "confirmed");
         const vaultAccountInfo = await connection.getAccountInfo(vaultPda);
-        
+
         if (!vaultAccountInfo) {
             console.log(`   ⚠️ Vault doesn't exist for recipient ${recipientPubkey.toBase58()}`);
             console.log(`   Vault PDA: ${vaultPda.toBase58()}`);
@@ -1062,15 +1062,15 @@ async function relayToSolana(bridgeEvent: BridgeEvent, encryptedAmountBytes: Uin
 // --- Event Monitoring ---
 async function monitorBridgeEvents() {
     console.log(`\n📡 Starting event monitor...`);
-    
+
     let lastBlock = await basePublicClient.getBlockNumber() - BigInt(10);
-    
+
     setInterval(async () => {
         try {
             const currentBlock = await basePublicClient.getBlockNumber();
-            
+
             if (currentBlock <= lastBlock) return;
-            
+
             const logs = await basePublicClient.getLogs({
                 address: CONFIDENTIAL_BRIDGE_ADDRESS,
                 fromBlock: lastBlock + BigInt(1),
