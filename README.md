@@ -2,7 +2,7 @@
 
 Privacy-preserving cross-chain bridge between **Base (Ethereum L2)** and **Solana**.
 
-Transfer tokens across chains where amounts, balances, and identities stay hidden from on-chain observers. Powered by [Inco Lightning](https://www.inco.org/) TEE (Trusted Execution Environment) for encrypted computation inside secure hardware enclaves.
+Transfer tokens across chains where amounts, balances, and identities stay hidden from on-chain observers. Powered by [Inco](https://www.inco.org/) TEE (Trusted Execution Environment) for encrypted computation inside secure hardware enclaves.
 
 **Networks:** Base Sepolia (Testnet) <-> Solana Devnet | **Token:** cDARK
 
