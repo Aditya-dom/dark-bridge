@@ -185,28 +185,6 @@ graph TD
 
 ---
 
-## Deployed Addresses
-
-### Base Sepolia
-
-| Contract | Address |
-|---|---|
-| Bridge | `0x8e46419298a9620ea326113baf4019a23594bb11` |
-| ConfidentialBridge | `0x04423E2D4e74b8C5D17730143400ca43fC800f73` |
-| cDARK Token | `0xeC7f5bDafE9934658d717E9a13Ae4259858b5F0b` |
-| BridgeValidator | `0x9fc354b36a6a1da0c1dBdcE2fc73793eAb6FC462` |
-
-### Solana Devnet
-
-| Program | Address |
-|---|---|
-| Bridge Program | `EEMKRm1ANMBZHS6yEi67bKVuZDPhztQHVWBzoFnoVbh9` |
-| Base Relayer | `BGrkLkS3VZLxkM8PtKJukYYXQW1N3mPJaL3PPXieLQi9` |
-| Inco Lightning | `5sjEbPiqgZrYwR31ahR6Uk9wf5awoX61YGg7jExQSwaj` |
-| cDARK Mint | `3JWs353tgpFRVxb6Ubi85hDm5eBsbGrJFmVqNS8t6V3V` |
-
----
-
 ## Tech Stack
 
 | Layer | Technologies |
@@ -229,6 +207,3 @@ graph TD
 
 ---
 
-## License
-
-MIT
